@@ -65,7 +65,7 @@ MODES = {
     "chill":      dict(chord_len=(7, 9), arp_step=(0.28, 0.4), arp_prob=0.45,
                        pluck=True, pad_gain=0.16, bass_gain=0.13, arp_gain=0.075,
                        pluck_gain=0.06, noise_gain=0.030, noise_cut=420, lfo=(0.06, 0.1),
-                       rhythm_def="light", swing=0.08, guitar=True, guitar_gain=0.065,
+                       rhythm_def="light", swing=0.08, guitar=True, guitar_gain=0.105,
                        vinyl=False, wobble=False),
     "meditation": dict(chord_len=(12, 18), arp_step=(1.2, 2.0), arp_prob=0.35,
                        pluck=False, pad_gain=0.20, bass_gain=0.17, arp_gain=0.05,
@@ -75,16 +75,16 @@ MODES = {
     "ambient":    dict(chord_len=(9, 12), arp_step=(0.7, 1.1), arp_prob=0.4,
                        pluck=True, pad_gain=0.18, bass_gain=0.14, arp_gain=0.06,
                        pluck_gain=0.05, noise_gain=0.035, noise_cut=360, lfo=(0.05, 0.08),
-                       rhythm_def="light", swing=0.06, guitar=True, guitar_gain=0.05,
+                       rhythm_def="light", swing=0.06, guitar=True, guitar_gain=0.085,
                        vinyl=False, wobble=False),
     "lofi":       dict(chord_len=(9, 13), arp_step=(0.42, 0.6), arp_prob=0.42,
                        pluck=True, pad_gain=0.17, bass_gain=0.15, arp_gain=0.07,
                        pluck_gain=0.055, noise_gain=0.030, noise_cut=300, lfo=(0.05, 0.08),
-                       rhythm_def="standard", swing=0.12, guitar=True, guitar_gain=0.055,
+                       rhythm_def="standard", swing=0.12, guitar=True, guitar_gain=0.095,
                        vinyl=True, wobble=True),
 }
 
-RHYTHM_DENSITY = {"none": 0.0, "light": 0.35, "standard": 0.6, "full": 0.9}
+RHYTHM_DENSITY = {"none": 0.0, "light": 0.45, "standard": 0.72, "full": 1.0}
 
 # lofi 的柔和进行（7/9 和弦为主，chill-hop 风格；避免明亮大调 maj7 刺耳）
 LOFI_PROGS = {
@@ -187,21 +187,23 @@ def _plan(seed: int, mode: str, mood: str, seconds: float,
                                rng.uniform(0.7, 1.0)))
             t += pstep
 
-    # ---- 吉他（Karplus-Strong 拨弦：和弦扫弦 + 指弹点缀）
+    # ---- 吉他（Karplus-Strong 拨弦：和弦扫弦 + 指弹点缀；压低把位更暖更实）
     guitar: list[tuple] = []
     if st["guitar"]:
         for (cs, ce, notes, _) in chords:
-            strings = [notes[0], notes[1], notes[2]]
-            if ce - cs > 2.0 and notes[0] + 12 <= 84:
-                strings.append(notes[0] + 12)
+            base = min(notes)
+            voicing = [n - 12 for n in notes[:3] if n - 12 >= tonic - 12] or notes[:3]
+            strings = voicing[:3]
+            if ce - cs > 2.0 and base + 12 <= tonic + 12:
+                strings.append(base + 12)
             for k, nn in enumerate(strings):
-                guitar.append((cs + k * 0.028, _midi_to_freq(nn),
-                               rng.uniform(0.6, 0.85)))
+                guitar.append((cs + k * 0.03, _midi_to_freq(nn),
+                               rng.uniform(0.72, 0.95)))
             t = cs + 0.5
             while t < ce - 0.4:
-                if rng.random() < 0.55:
-                    nn = rng.choice(notes)
-                    guitar.append((t, _midi_to_freq(nn), rng.uniform(0.35, 0.6)))
+                if rng.random() < 0.6:
+                    nn = min(min(notes) + rng.choice([0, 7, 12]), tonic + 12)
+                    guitar.append((t, _midi_to_freq(nn), rng.uniform(0.5, 0.75)))
                 t += rng.uniform(0.3, 0.65)
 
     # ---- 鼓组（kick / snare / 摆动 hi-hat；节奏密度可调）
@@ -211,7 +213,7 @@ def _plan(seed: int, mode: str, mood: str, seconds: float,
     if rhythm not in RHYTHM_DENSITY:
         rhythm = st["rhythm_def"]
     density = RHYTHM_DENSITY[rhythm]
-    snare_on = rhythm in ("standard", "full")
+    snare_on = rhythm in ("light", "standard", "full")
     if rhythm != "none" and bpm > 0:
         step_b = 60.0 / bpm
         swing = st["swing"] * step_b
@@ -222,17 +224,37 @@ def _plan(seed: int, mode: str, mood: str, seconds: float,
             bar_pos = beat_i % 4
             if bar_pos in (0, 2) and random.Random(seed + beat_i).random() < density:
                 drums.append(("kick", t, random.Random(seed + beat_i * 7).uniform(0.85, 1.0)))
-            elif bar_pos == 3 and density > 0.7 and random.Random(seed + beat_i).random() < density * 0.4:
+            elif bar_pos == 3 and density > 0.6 and random.Random(seed + beat_i).random() < density * 0.4:
                 drums.append(("kick", t + swing, random.Random(seed + beat_i * 7).uniform(0.5, 0.7)))
             if snare_on and bar_pos in (1, 3):
-                drums.append(("snare", t, random.Random(seed + beat_i * 13).uniform(0.4, 0.55)))
+                amp = random.Random(seed + beat_i * 13).uniform(0.4, 0.55)
+                if rhythm == "light":
+                    amp *= 0.7
+                drums.append(("snare", t, amp))
             for off, swing_on in ((0.0, False), (eighth, True)):
                 ht = t + off + (swing if swing_on else 0.0)
-                p = 0.75 if rhythm != "full" else 0.9
+                p = 0.78 if rhythm != "full" else 0.92
                 if ht < seconds and random.Random(seed + beat_i * 3).random() < p:
-                    drums.append(("hat", ht, random.Random(seed + beat_i * 17).uniform(0.35, 0.6)))
+                    drums.append(("hat", ht, random.Random(seed + beat_i * 17).uniform(0.4, 0.65)))
             t += step_b
             beat_i += 1
+
+    # ---- 节奏化贝斯（跟随和弦根音，重拍+弱拍过门，增加律动感）
+    bass_hits: list[tuple] = []
+    if rhythm != "none" and bpm > 0:
+        step_b = 60.0 / bpm
+        t = 0.0
+        bi = 0
+        while t < seconds:
+            bar_pos = bi % 4
+            chord = next((c for c in chords if c[0] <= t < c[1]), None)
+            root = (min(chord[2]) - 12) if chord else (tonic - 12)
+            if bar_pos in (0, 2):
+                bass_hits.append((t, _midi_to_freq(root), rng.uniform(0.7, 0.9)))
+            if rhythm in ("standard", "full") and bar_pos == 1:
+                bass_hits.append((t + step_b / 2, _midi_to_freq(root), rng.uniform(0.4, 0.55)))
+            t += step_b
+            bi += 1
 
     # ---- 黑胶噪点（lofi：稀疏高频爆点）
     vinyl = float(profile.get("vinyl", 0.0)) if profile else (0.15 if st["vinyl"] else 0.0)
@@ -246,7 +268,8 @@ def _plan(seed: int, mode: str, mood: str, seconds: float,
             t += 0.25
     return dict(rng=rng, tonic=tonic, bpm=bpm, mode=mode, mood=mood,
                 chords=chords, arps=arps, plucks=plucks, guitar=guitar, drums=drums,
-                bursts=bursts, vinyl=vinyl, beat=rhythm != "none", rhythm=rhythm,
+                bass_hits=bass_hits, bursts=bursts, vinyl=vinyl,
+                beat=rhythm != "none", rhythm=rhythm,
                 seconds=seconds, bright=bright, st=st,
                 np_seed=rng.randrange(0, 2 ** 31))
 
@@ -287,8 +310,7 @@ def _render_block(plan: dict, b0: float, b1: float) -> np.ndarray:
             bus[k0:k1] += g * tone * env
             bus[k0:k1] += 0.55 * g * np.sin(2 * np.pi * f * 1.0012 * seg) * env
 
-    # ---- 低音（根音 -12/-24，正弦）
-    bass_f = _midi_to_freq(plan["tonic"] - 12)
+    # ---- 低音（跟随和弦根音 -12，正弦）
     nch = len(plan["chords"])
     for i, (s, e, notes, _br) in enumerate(plan["chords"]):
         if e <= b0 or s >= b1:
@@ -297,6 +319,7 @@ def _render_block(plan: dict, b0: float, b1: float) -> np.ndarray:
         oe = min(e - b0, b1 - b0)
         k0, k1 = int(os_ * SR), int(oe * SR)
         seg = np.arange(k0, k1, dtype=np.float32) / SR + b0
+        bass_f = _midi_to_freq(min(notes) - 12)
         f = bass_f if i % 2 == 0 else bass_f / 2.0
         env = np.ones(k1 - k0, dtype=np.float32)
         atk = int(1.4 * SR); rel = int(2.2 * SR)
@@ -326,7 +349,7 @@ def _render_block(plan: dict, b0: float, b1: float) -> np.ndarray:
     spark[-edge:] *= np.linspace(1.0, 0.0, edge)
     bus[:n] += spark[:n]
 
-    # ---- 吉他（Karplus-Strong 拨弦：块迭代反馈延迟线）
+    # ---- 吉他（Karplus-Strong 拨弦：软化攻击 + 琴体共鸣，更暖更实）
     guitar_bus = np.zeros(n2, dtype=np.float32)
     g_gain = st["guitar_gain"]
     for (t0, freq, vel) in plan["guitar"]:
@@ -339,6 +362,8 @@ def _render_block(plan: dict, b0: float, b1: float) -> np.ndarray:
             continue
         rng_np = np.random.default_rng(plan["np_seed"] ^ int(t0 * 133357))
         buf = rng_np.normal(0, 1, period).astype(np.float32) * vel
+        buf = np.convolve(buf, np.array([1, 2, 1], np.float32) / 4, "same")   # 软化拨弦攻击
+        buf = np.convolve(buf, np.array([1, 2, 1], np.float32) / 4, "same")
         decay = 10 ** (-2.0 / max(0.1, sustain * freq))
         out = np.empty(n_periods * period, dtype=np.float32)
         for b in range(n_periods):
@@ -349,9 +374,29 @@ def _render_block(plan: dict, b0: float, b1: float) -> np.ndarray:
         seg_len = min(len(out), n2 - i0)
         if seg_len > 0:
             guitar_bus[i0:i0 + seg_len] += out[:seg_len] * g_gain
+        # 琴体共鸣（低频 95Hz 起振，让拨弦更饱满圆润）
+        bln = min(int(0.16 * SR), n2 - i0)
+        if bln > 0:
+            bseg = np.arange(bln, dtype=np.float32) / SR
+            body = np.sin(2 * np.pi * 95 * bseg) * np.exp(-bseg / 0.05) * 0.45 * vel * g_gain
+            guitar_bus[i0:i0 + bln] += body
     gedge = int(0.003 * SR)
     guitar_bus[:gedge] *= np.linspace(0.0, 1.0, gedge)
     bus[:n] += guitar_bus[:n]
+
+    # ---- 节奏化贝斯（重拍根音 + 弱拍过门，跟随和弦根音）
+    bass_bus = np.zeros(n2, dtype=np.float32)
+    for (t0, freq, vel) in plan["bass_hits"]:
+        if t0 < b0 or t0 > b1:
+            continue
+        i0 = int((t0 - b0) * SR)
+        bln = int(0.24 * SR)
+        if i0 + bln <= n2:
+            bseg = np.arange(bln, dtype=np.float32) / SR
+            tone = np.sin(2 * np.pi * freq * bseg) * np.exp(-bseg / 0.09)
+            tone += 0.35 * np.sin(4 * np.pi * freq * bseg) * np.exp(-bseg / 0.06)
+            bass_bus[i0:i0 + bln] += 0.085 * vel * tone
+    bus[:n] += bass_bus[:n]
 
     # ---- 鼓组（kick 正弦音高下滑 / snare 噪声+中频 / hat 短噪声）
     drum_bus = np.zeros(n2, dtype=np.float32)
@@ -365,20 +410,20 @@ def _render_block(plan: dict, b0: float, b1: float) -> np.ndarray:
             seg = np.arange(ln, dtype=np.float32) / SR
             ph = 2 * np.pi * (55.0 * seg + 2.0 * (1.0 - np.exp(-20.0 * seg)))
             tone = np.sin(ph) * np.exp(-6.0 * seg)
-            drum_bus[i0:i0 + ln] += 0.22 * amp * tone
+            drum_bus[i0:i0 + ln] += 0.30 * amp * tone
         elif kind == "snare":
             ln = int(0.20 * SR)
             rng_np = np.random.default_rng(plan["np_seed"] ^ int(onset * 104729))
             seg = np.arange(ln, dtype=np.float32) / SR
             nse = rng_np.normal(0, 1, ln).astype(np.float32) * np.exp(-seg / 0.05)
             tne = np.sin(2 * np.pi * 185 * seg) * np.exp(-seg / 0.07)
-            drum_bus[i0:i0 + ln] += 0.06 * amp * (nse * 0.6 + tne)
+            drum_bus[i0:i0 + ln] += 0.085 * amp * (nse * 0.6 + tne)
         elif kind == "hat":
             ln = int(0.07 * SR)
             rng_np = np.random.default_rng(plan["np_seed"] ^ int(onset * 100003))
             seg = np.arange(ln, dtype=np.float32) / SR
             nse = rng_np.normal(0, 1, ln).astype(np.float32) * np.exp(-seg / 0.02)
-            drum_bus[i0:i0 + ln] += 0.03 * amp * nse
+            drum_bus[i0:i0 + ln] += 0.042 * amp * nse
     # ---- 黑胶噪点（稀疏短促高频爆点）
     for (t0, amp) in plan["bursts"]:
         if t0 < b0 or t0 > b1:
