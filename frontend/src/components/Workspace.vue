@@ -25,6 +25,10 @@
         </span>
         <span class="t">待合成文本</span>
         <span class="chips"><em>.txt</em><em>.docx</em><em>.pdf</em></span>
+        <span class="mode-switch">
+          <button class="mode-btn" :class="{on: mode==='plain'}" @click="mode='plain'">朗读模式</button>
+          <button class="mode-btn" :class="{on: mode==='script'}" @click="mode='script'">剧本模式</button>
+        </span>
         <span class="tag gray" style="margin-left:auto">自动检测编码</span>
       </div>
       <div class="tarea-wrap">
@@ -32,9 +36,30 @@
       </div>
       <div class="tcard-foot">
         <span>字数 <b>{{ text.length.toLocaleString() }}</b></span>
-        <span>约 <b>{{ Math.max(1, Math.round(text.length / 4.2 / 60 * 10) / 10) }}</b> 分钟</span>
-        <span v-if="text.length > 1000" class="tag amber" style="margin-left:auto">自动分块 · {{ blockCount }} 块</span>
-        <span v-else class="tag teal" style="margin-left:auto">单块合成</span>
+        <span v-if="mode==='plain'">约 <b>{{ Math.max(1, Math.round(text.length / 4.2 / 60 * 10) / 10) }}</b> 分钟</span>
+        <span v-else class="tag teal">剧本 · {{ scriptRoles.length }} 个角色</span>
+        <span v-if="mode==='plain' && text.length > 1000" class="tag amber" style="margin-left:auto">自动分块 · {{ blockCount }} 块</span>
+        <span v-else-if="mode==='plain'" class="tag teal" style="margin-left:auto">单块合成</span>
+      </div>
+      <p v-if="mode==='script'" class="script-hint">
+        每行按 <b>角色名：台词</b> 书写；未标注的行自动归为「旁白」。示例：<code>林小雨：我真的不想再等了！</code>
+      </p>
+    </div>
+
+    <div v-if="mode==='script' && scriptRoles.length" class="card rolecard">
+      <div class="head">
+        <span class="ic amber"><svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="3.2" stroke="currentColor" stroke-width="1.7"/><path d="M3.5 19c.6-3 2.8-4.5 5.5-4.5s4.9 1.5 5.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="17" cy="9" r="2.6" stroke="currentColor" stroke-width="1.7"/><path d="M15.5 14.6c2.2.3 3.9 1.5 4.5 3.9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+        <span class="t">角色音色分配</span>
+        <span class="tag gray" style="margin-left:auto">留空 = 自动分配</span>
+      </div>
+      <div class="roles">
+        <div v-for="r in scriptRoles" :key="r" class="role-row">
+          <span class="rname">{{ r }}</span>
+          <select :value="roleSel[r] || ''" @change="roleSel[r] = $event.target.value">
+            <option value="">自动分配</option>
+            <option v-for="v in zhVoices" :key="v.short_name" :value="v.short_name">{{ v.display_name }}</option>
+          </select>
+        </div>
       </div>
     </div>
 
@@ -75,6 +100,7 @@ const emit = defineEmits(['toast', 'save-history'])
 
 const text = ref('')
 const voices = ref([])
+const zhVoices = ref([])
 const voicesLoading = ref(true)
 const voice = ref('zh-CN-XiaoxiaoNeural')
 const autoEmotion = ref(true)
@@ -86,6 +112,8 @@ const volume = ref(1.0)
 const busy = ref(false)
 const task = ref(null)
 const showImport = ref(false)
+const mode = ref('plain')
+const roleSel = ref({})
 
 const blockCount = computed(() => Math.ceil(text.value.length / 1000))
 const emotionLabel = computed(() => {
@@ -94,10 +122,21 @@ const emotionLabel = computed(() => {
   return e ? e.label : '平静'
 })
 
+const scriptRoles = computed(() => {
+  const roles = new Set()
+  for (const line of text.value.split('\n')) {
+    const m = line.match(/^([^\s：:]{1,16})[：:]\s*(.+)$/)
+    if (m && m[1].length < 10 && m[2].trim()) roles.add(m[1].trim())
+  }
+  roles.delete('旁白')
+  return [...roles]
+})
+
 onMounted(async () => {
   try {
     const all = await api.voices('zh-CN')
     voices.value = all
+    zhVoices.value = all
     if (all.length) voice.value = all[0].short_name
   } catch (e) {
     emit('toast', '音色列表加载失败：' + e.message)
@@ -108,6 +147,11 @@ onMounted(async () => {
 // 手动指定情绪时关闭自动
 watch(emotion, v => { if (v !== 'auto') autoEmotion.value = false })
 
+// 文本含剧本格式时自动切换到剧本模式
+watch(text, () => {
+  if (text.value && scriptRoles.value.length && mode.value === 'plain') mode.value = 'script'
+})
+
 function clearText() { text.value = ''; task.value = null }
 function onImported(t) { text.value = t; emit('toast', `已导入文本 · ${t.length.toLocaleString()} 字`) }
 
@@ -115,9 +159,15 @@ async function synthesize() {
   busy.value = true
   task.value = null
   try {
+    const roleMap = {}
+    for (const [r, v] of Object.entries(roleSel.value)) {
+      if (v) roleMap[r] = v
+    }
     const payload = {
       text: text.value,
       voice: voice.value,
+      script_mode: mode.value === 'script',
+      role_map: Object.keys(roleMap).length ? roleMap : undefined,
       auto_emotion: autoEmotion.value,
       emotion: emotion.value === 'auto' ? null : emotion.value,
       emotion_strength: strength.value,
@@ -162,6 +212,22 @@ function onDone(item) {
 .tcard-head .t { font-size: 14px; font-weight: 700; }
 .chips { display: flex; gap: 6px; }
 .chips em { font-style: normal; font-size: 10.5px; font-family: var(--mono); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; color: var(--ink-faint); }
+.mode-switch { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 999px; padding: 2px; }
+.mode-btn { border: 0; background: transparent; border-radius: 999px; padding: 4px 13px; font-size: 12px; color: var(--ink-soft); font-weight: 600; transition: all .15s; }
+.mode-btn.on { background: var(--accent); color: #fff; }
+.script-hint { font-size: 11.5px; color: var(--ink-faint); padding: 0 16px 11px; line-height: 1.6; }
+.script-hint b { color: var(--ink-soft); }
+.script-hint code { font-family: var(--mono); font-size: 11px; background: var(--paper); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; color: var(--teal); }
+.rolecard .head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.rolecard .head .ic { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; flex: none; }
+.rolecard .head .ic svg { width: 14px; height: 14px; }
+.rolecard .head .ic.amber { background: var(--amber-soft); color: var(--amber); }
+.rolecard .head .t { font-size: 13.5px; font-weight: 700; }
+.roles { padding: 12px 16px; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 9px; }
+.role-row { display: flex; align-items: center; gap: 10px; }
+.rname { font-size: 12.5px; font-weight: 700; min-width: 70px; }
+.role-row select { flex: 1; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--card); padding: 7px 10px; font-size: 12.5px; color: var(--ink); outline: none; }
+@media (max-width: 640px) { .mode-btn { padding: 4px 10px; font-size: 11.5px; } }
 .tarea-wrap { padding: 14px 16px 8px; }
 .tarea-wrap textarea {
   width: 100%; min-height: 130px; border: 1px dashed var(--line-strong); border-radius: 11px;

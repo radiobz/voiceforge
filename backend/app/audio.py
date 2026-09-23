@@ -25,18 +25,18 @@ def _silence_file(ms: int) -> str:
 
 
 def concat_mp3(seg_files: list[str], out_path: str, silence_ms: int = JOIN_SILENCE_MS) -> None:
-    """把多个 mp3 用自然停顿拼接为单个 mp3。"""
+    """把多个 mp3 用自然停顿拼接为单个 mp3。silence_ms<=0 时不插入额外静音。"""
     if not seg_files:
         raise ValueError("empty segments")
     if len(seg_files) == 1:
         subprocess.run(["ffmpeg", "-y", "-i", seg_files[0], "-codec", "copy", out_path],
                        check=True, capture_output=True)
         return
-    silence = _silence_file(silence_ms)
+    silence = _silence_file(silence_ms) if silence_ms > 0 else None
     list_path = os.path.join(os.path.dirname(out_path), f".concat_{uuid.uuid4().hex}.txt")
     lines = []
     for i, f in enumerate(seg_files):
-        if i > 0:
+        if i > 0 and silence:
             lines.append(f"file '{silence.replace(chr(39), chr(39)*2)}'")
         lines.append(f"file '{f.replace(chr(39), chr(39)*2)}'")
     with open(list_path, "w", encoding="utf-8") as fh:
@@ -49,6 +49,20 @@ def concat_mp3(seg_files: list[str], out_path: str, silence_ms: int = JOIN_SILEN
     finally:
         if os.path.exists(list_path):
             os.remove(list_path)
+
+
+def trim_leading_silence_mp3(src: str, dst: str, threshold_db: float = -48.0) -> None:
+    """修剪开头近静音。
+
+    edge-tts 每个合成片段（SSML 单元）开头都会带约 150~190ms 的前导静音，
+    多片段拼接时会在句中形成可闻的"断音"。本函数只移除真正低于阈值的静音，
+    不影响语音起始辅音。
+    """
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", src,
+         "-af", f"silenceremove=start_periods=1:start_threshold={threshold_db}dB:start_silence=0.04",
+         "-c:a", "libmp3lame", "-q:a", "2", dst],
+        check=True, capture_output=True)
 
 
 def to_wav(src_mp3: str, out_wav: str) -> None:
@@ -88,6 +102,26 @@ def make_srt(segments: list[dict], out_path: str) -> None:
             entries.append((start, end, p.strip()))
         cursor += dur + 0.3  # 块间加 0.3s 空隙对齐拼接静音
 
+    _write_srt(entries, out_path)
+
+
+def make_srt_units(units: list[dict], out_path: str, gap: float = 0.2) -> None:
+    """按实际台词行时长生成 SRT（剧本模式，逐行精确计时）。"""
+    entries = []
+    cursor = 0.0
+    for u in units:
+        dur = u.get("duration", 0.0)
+        text = u.get("text", "").strip()
+        role = u.get("role", "")
+        if not text:
+            continue
+        label = f"[{role}] {text}" if role else text
+        entries.append((cursor, cursor + dur, label))
+        cursor += dur + gap
+    _write_srt(entries, out_path)
+
+
+def _write_srt(entries: list[tuple], out_path: str) -> None:
     def _fmt(sec: float) -> str:
         h = int(sec // 3600)
         m = int((sec % 3600) // 60)

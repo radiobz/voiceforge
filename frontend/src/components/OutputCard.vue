@@ -24,6 +24,7 @@
       <div class="segs">
         <div v-for="s in task.segments" :key="s.index" class="seg">
           <span class="idx">#{{ String(s.index).padStart(2,'0') }}</span>
+          <span v-if="s.role" class="role">{{ s.role }}</span>
           <span class="em">{{ s.label }}</span>
           <span class="bar"><i style="width:60%"></i></span>
           <span class="st">合成中…</span>
@@ -57,6 +58,7 @@
       <div class="segs">
         <div v-for="s in task.segments" :key="s.index" class="seg">
           <span class="idx">#{{ String(s.index).padStart(2,'0') }}</span>
+          <span v-if="s.role" class="role">{{ s.role }}</span>
           <span class="em" :class="'e-'+s.emotion">{{ s.label }}</span>
           <span class="bar"><i :style="{width: Math.min(100, s.duration / Math.max(1, task.duration) * 100) + '%'}"></i></span>
           <span class="st">{{ fmtDur(s.duration) }}</span>
@@ -145,6 +147,7 @@ function seekFromWave(e) {
 .segs { margin-top: 13px; border-top: 1px solid var(--line); padding-top: 11px; display: grid; gap: 7px; }
 .seg { display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--ink-soft); }
 .idx { font-family: var(--mono); color: var(--ink-faint); width: 40px; flex: none; font-size: 11px; }
+.role { flex: none; font-size: 11px; font-weight: 700; color: var(--teal); background: var(--teal-soft); border-radius: 6px; padding: 1px 8px; }
 .em { flex: none; min-width: 34px; font-weight: 600; font-size: 11px; }
 .e-joy { color: #B0578D; } .e-sad { color: #3E5C9B; } .e-angry { color: #C0392B; }
 .e-calm { color: var(--ink-faint); } .e-surprised { color: #C8861E; } .e-fear { color: #5A4A8F; }
