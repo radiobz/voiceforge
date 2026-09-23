@@ -529,8 +529,16 @@ def generate(mode: str, mood: str, seconds: float, seed: int,
     plan = generate_plan(mode, mood, seconds, seed, profile=profile, rhythm=rhythm,
                          guitar=guitar)
     wav = out_mp3.rsplit(".", 1)[0] + ".wav"
-    render_wav(plan, wav)
-    to_mp3(wav, out_mp3)
+    try:
+        render_wav(plan, wav)
+        to_mp3(wav, out_mp3)
+    finally:
+        # FIX-013：中间 wav 转 mp3 后删除，避免磁盘泄漏
+        if os.path.exists(wav):
+            try:
+                os.remove(wav)
+            except OSError:
+                pass
     meta = dict(mode=mode, mood=mood, seed=seed, seconds=seconds,
                 key=_note_name(plan["tonic"]), bpm=plan["bpm"],
                 kind=MOODS[mood]["kind"], beat=plan["beat"],
@@ -622,6 +630,11 @@ def mix_with_voice(voice_path: str, music_path: str, seg_times: list[tuple[float
     mix = voice + music_bus
     peak = float(np.max(np.abs(mix))) or 1.0
     mix = np.tanh(1.2 * mix / max(peak, 1e-9)) * 0.92 * peak if peak > 1.0 else mix
-    write_audio(music_bus * (1.0 / max(bcfg["gap"], 1e-9)), out_music)   # 纯配乐（未压）
+    # FIX-014：out_music 应交付未被 ducking 的纯音乐（仅裁剪 + 尾部淡出），
+    # 而不是 music_bus/gap（后者在语音段仍被压到 duck/gap 比例）。
+    pure_music = music[:keep].copy()
+    if keep > fade:
+        pure_music[-fade:] *= np.linspace(1.0, 0.0, fade)[:, None]
+    write_audio(pure_music, out_music)
     write_audio(mix, out_mix)
     return keep / SR

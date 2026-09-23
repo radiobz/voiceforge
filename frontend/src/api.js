@@ -67,7 +67,15 @@ export const api = {
   },
   taskStream(id, onData) {
     const es = new EventSource(`${BASE}/api/tasks/${id}/stream`)
-    es.onmessage = e => onData(JSON.parse(e.data))
+    es.onmessage = e => {
+      const data = JSON.parse(e.data)
+      onData(data)
+      // FIX-025：任务结束/失败后主动关闭连接，避免浏览器自动重连造成死循环
+      if (data.status === 'done' || data.status === 'failed') {
+        es.close()
+      }
+    }
+    es.onerror = () => { /* 静默；结束后已 close，浏览器不再重连 */ }
     return es
   }
 }

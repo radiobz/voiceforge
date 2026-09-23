@@ -2,24 +2,39 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
+import tempfile
 import uuid
 
 from .config import JOIN_SILENCE_MS
 
+logger = logging.getLogger("voiceforge.audio")
+
 SILENCE_CACHE: dict[int, str] = {}
+# FIX-019：静音缓存写到临时目录，避免源码目录只读导致写失败
+_SILENCE_DIR = os.path.join(tempfile.gettempdir(), "voiceforge_silence")
+os.makedirs(_SILENCE_DIR, exist_ok=True)
+
+
+def _run_ffmpeg(cmd: list[str]) -> subprocess.CompletedProcess:
+    """FIX-018：统一 ffmpeg 调用，失败时把 stderr 末尾信息拼进异常，避免静默吞错。"""
+    try:
+        return subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or b"").decode("utf-8", "ignore")[-500:]
+        raise RuntimeError(f"ffmpeg 失败：{err.splitlines()[-1] if err else e}") from e
 
 
 def _silence_file(ms: int) -> str:
     """生成指定毫秒的静音 mp3（缓存复用）。"""
     if ms in SILENCE_CACHE and os.path.exists(SILENCE_CACHE[ms]):
         return SILENCE_CACHE[ms]
-    path = os.path.join(os.path.dirname(__file__), ".silence_%dms.mp3" % ms)
-    subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r=24000:cl=mono",
-         "-t", f"{ms / 1000:.3f}", "-q:a", "9", path],
-        check=True, capture_output=True)
+    path = os.path.join(_SILENCE_DIR, ".silence_%dms.mp3" % ms)
+    _run_ffmpeg(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+         "-t", f"{ms / 1000:.3f}", "-q:a", "9", path])
     SILENCE_CACHE[ms] = path
     return path
 
@@ -29,8 +44,7 @@ def concat_mp3(seg_files: list[str], out_path: str, silence_ms: int = JOIN_SILEN
     if not seg_files:
         raise ValueError("empty segments")
     if len(seg_files) == 1:
-        subprocess.run(["ffmpeg", "-y", "-i", seg_files[0], "-codec", "copy", out_path],
-                       check=True, capture_output=True)
+        _run_ffmpeg(["ffmpeg", "-y", "-i", seg_files[0], "-codec", "copy", out_path])
         return
     silence = _silence_file(silence_ms) if silence_ms > 0 else None
     list_path = os.path.join(os.path.dirname(out_path), f".concat_{uuid.uuid4().hex}.txt")
@@ -42,10 +56,9 @@ def concat_mp3(seg_files: list[str], out_path: str, silence_ms: int = JOIN_SILEN
     with open(list_path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))
     try:
-        subprocess.run(
+        _run_ffmpeg(
             ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
-             "-c:a", "libmp3lame", "-q:a", "2", out_path],
-            check=True, capture_output=True)
+             "-c:a", "libmp3lame", "-q:a", "2", out_path])
     finally:
         if os.path.exists(list_path):
             os.remove(list_path)
@@ -58,32 +71,36 @@ def trim_leading_silence_mp3(src: str, dst: str, threshold_db: float = -48.0) ->
     多片段拼接时会在句中形成可闻的"断音"。本函数只移除真正低于阈值的静音，
     不影响语音起始辅音。
     """
-    subprocess.run(
+    _run_ffmpeg(
         ["ffmpeg", "-y", "-i", src,
          "-af", f"silenceremove=start_periods=1:start_threshold={threshold_db}dB:start_silence=0.04",
-         "-c:a", "libmp3lame", "-q:a", "2", dst],
-        check=True, capture_output=True)
+         "-c:a", "libmp3lame", "-q:a", "2", dst])
 
 
 def to_wav(src_mp3: str, out_wav: str) -> None:
-    subprocess.run(["ffmpeg", "-y", "-i", src_mp3, "-ar", "44100", "-ac", "2", out_wav],
-                   check=True, capture_output=True)
+    _run_ffmpeg(["ffmpeg", "-y", "-i", src_mp3, "-ar", "44100", "-ac", "2", out_wav])
 
 
 def duration_ms(path: str) -> float:
-    """返回音频时长（秒）。"""
+    """返回音频时长（秒）。失败时返回 0.0（不破坏调用方），但记录警告。"""
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json",
              "-show_format", path], capture_output=True, check=True)
         info = json.loads(r.stdout)
         return float(info.get("format", {}).get("duration", 0))
-    except Exception:
+    except Exception as e:
+        # FIX-020：保留返回 0.0，但输出警告便于排查
+        logger.warning("duration_ms ffprobe 失败 %s: %s", path, e)
         return 0.0
 
 
-def make_srt(segments: list[dict], out_path: str) -> None:
-    """按分块时长生成 SRT 字幕（各块内按句号二次均分时间）。"""
+def make_srt(segments: list[dict], out_path: str, gap: float = 0.0) -> None:
+    """按分块时长生成 SRT 字幕（各块内按句号二次均分时间）。
+
+    gap：块间额外时间间隙（秒）。拼接流水线 silence_ms=0，故默认 0.0，
+    避免字幕时间轴相对音频漂移。
+    """
     entries = []
     cursor = 0.0
     for seg in segments:
@@ -100,7 +117,7 @@ def make_srt(segments: list[dict], out_path: str) -> None:
             start = cursor + i * per
             end = start + per
             entries.append((start, end, p.strip()))
-        cursor += dur + 0.3  # 块间加 0.3s 空隙对齐拼接静音
+        cursor += dur + gap
 
     _write_srt(entries, out_path)
 

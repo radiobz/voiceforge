@@ -81,11 +81,14 @@ def extract_audio(data: bytes, filename: str, out_wav: str) -> float:
 
 
 def _decode(wav_path: str) -> np.ndarray:
-    raw = subprocess.run(
+    r = subprocess.run(
         ["ffmpeg", "-v", "quiet", "-i", wav_path, "-f", "f32le",
          "-ac", "1", "-ar", "16000", "-"],
-        capture_output=True).stdout
-    return np.frombuffer(raw, dtype=np.float32)
+        capture_output=True)
+    if r.returncode != 0:
+        err = (r.stderr or b"").decode("utf-8", "ignore")[-300:]
+        raise ValueError(f"音频解码失败：{err.splitlines()[-1] if err else 'unknown'}")
+    return np.frombuffer(r.stdout, dtype=np.float32)
 
 
 def _f0_series(x: np.ndarray, sr: int = 16000,
@@ -205,7 +208,8 @@ class CustomVoiceRegistry:
         self.items: dict[str, dict] = {}
         if os.path.exists(path):
             try:
-                self.items = json.load(open(path, encoding="utf-8"))
+                with open(path, encoding="utf-8") as f:
+                    self.items = json.load(f)
             except Exception:
                 self.items = {}
 
@@ -215,7 +219,8 @@ class CustomVoiceRegistry:
             json.dump(self.items, fh, ensure_ascii=False, indent=2)
 
     def add(self, entry: dict) -> dict:
-        vid = "custom_" + uuid.uuid4().hex[:8]
+        # FIX-001：若 entry 已带 id（create_custom 预填）则复用，保证 wav 文件名与 registry id 一致
+        vid = entry.get("id") or ("custom_" + uuid.uuid4().hex[:8])
         entry["id"] = vid
         entry["short_name"] = vid
         entry["created_at"] = __import__("time").time()
@@ -256,6 +261,8 @@ def create_custom(filename: str, data: bytes, name: str = "",
     features = analyze_voice(wav_path)
     closest = match_edge_voices(features, voices or []) if voices else []
     entry = {
+        "id": vid,
+        "short_name": vid,
         "source": filename,
         "display_name": name.strip() or os.path.splitext(os.path.basename(filename))[0],
         "ref_wav": f"/api/voices/custom/{vid}/audio",

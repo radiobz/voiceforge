@@ -13,6 +13,7 @@ express-as / instruction 支持，接口不变。
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 import edge_tts
@@ -97,4 +98,5 @@ async def synthesize_to_file(text: str, out_path: str, voice: str,
     pitch_hz = _hz(pitch)
     volume_pct = _pct(volume - 1.0)
     com = edge_tts.Communicate(text, voice, rate=rate_pct, pitch=pitch_hz, volume=volume_pct)
-    await com.save(out_path)
+    # FIX-022：网络合成加 120s 超时，避免端点挂起导致任务永久卡死
+    await asyncio.wait_for(com.save(out_path), timeout=120)

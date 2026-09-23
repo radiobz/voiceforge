@@ -33,12 +33,16 @@ def parse_script(text: str) -> list[dict]:
 
 
 def is_script(text: str) -> bool:
-    """判断文本是否为剧本格式：出现至少 1 个非旁白角色行。"""
+    """判断文本是否为剧本格式：至少出现 2 个不同的非旁白角色行。
+
+    FIX-024：原先只要 1 个角色行就判定为剧本，导致含中文冒号的普通文本
+    （如「日期：2024」）被误判。要求 >=2 个不同角色才认定为剧本。
+    """
     try:
         roles = {ln["role"] for ln in parse_script(text) if ln["role"] != "旁白"}
     except Exception:
         return False
-    return len(roles) >= 1
+    return len(roles) >= 2
 
 
 def auto_role_voices(roles: list[str], narration_voice: str,

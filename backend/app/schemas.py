@@ -1,5 +1,5 @@
 """灵声 VoiceForge - Pydantic 数据模型"""
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -37,46 +37,54 @@ class EmotionResponse(BaseModel):
     segments: List[EmotionSegment] = Field(default_factory=list)
 
 
+class EmotionRequest(BaseModel):
+    """FIX-009：/api/emotion/analyze 请求体，替代裸 dict。"""
+    text: str = ""
+
+
+_EMOTION_KEY = Literal["joy", "sad", "angry", "calm", "surprised", "fear"]
+
+
 class SynthesizeRequest(BaseModel):
-    text: str
+    text: str = Field(..., min_length=1)
     voice: str = "zh-CN-XiaoxiaoNeural"
-    emotion: Optional[str] = None          # 手动指定: joy/sad/angry/calm/surprised/fear
-    emotion_strength: float = 0.6          # 0.1-1.5
-    auto_emotion: bool = True              # 自动识别
-    rate: float = 1.0                      # 语速 0.5-2.0
-    pitch: float = 0.0                     # 音调 -50 ~ +50
-    volume: float = 1.0                    # 音量 0.0-2.0
-    output_format: str = "mp3"             # mp3 / wav
-    with_subtitle: bool = False            # 是否生成 SRT 字幕
-    script_mode: Optional[bool] = None     # 剧本模式（角色:台词）；None=自动检测
-    role_map: Optional[dict] = None        # 角色->音色映射（缺省角色自动分配）
+    emotion: Optional[_EMOTION_KEY] = None
+    emotion_strength: float = Field(0.6, ge=0.0, le=1.5)
+    auto_emotion: bool = True
+    rate: float = Field(1.0, ge=0.5, le=2.0)
+    pitch: float = Field(0.0, ge=-50.0, le=50.0)
+    volume: float = Field(1.0, ge=0.0, le=2.0)
+    output_format: Literal["mp3", "wav"] = "mp3"
+    with_subtitle: bool = False
+    script_mode: Optional[bool] = None
+    role_map: Optional[dict] = None
 
 
 class MusicGenerateRequest(BaseModel):
-    mode: str = "chill"                    # chill / meditation / ambient / lofi
-    duration: int = 120                    # 秒，10~2400（40 分钟）
-    mood: Optional[str] = None             # joy/sad/calm/angry/fear/surprised；None=随机
-    seed: Optional[int] = None             # None=随机种子
-    profile: Optional[dict] = None         # 风格分析覆盖（audio_profile.to_params 输出）
-    rhythm: Optional[str] = None           # 节奏密度 none/light/standard/full；None=按风格默认
-    guitar: Optional[bool] = None          # 吉他层开关；None=按风格默认
+    mode: Literal["chill", "meditation", "ambient", "lofi"] = "chill"
+    duration: int = Field(120, ge=10, le=2400)
+    mood: Optional[_EMOTION_KEY] = None
+    seed: Optional[int] = None
+    profile: Optional[dict] = None
+    rhythm: Optional[Literal["none", "light", "standard", "full"]] = None
+    guitar: Optional[bool] = None
 
 
 class MusicAdaptRequest(BaseModel):
-    task_id: str = ""                      # 复用已合成的语音任务（优先）
-    text: str = ""                         # 或提供文本：将先按 TTS 参数合成语音
+    task_id: str = ""
+    text: str = ""
     voice: str = "zh-CN-XiaoxiaoNeural"
-    emotion: Optional[str] = None
-    emotion_strength: float = 0.6
+    emotion: Optional[_EMOTION_KEY] = None
+    emotion_strength: float = Field(0.6, ge=0.0, le=1.5)
     auto_emotion: bool = True
-    rate: float = 1.0
-    pitch: float = 0.0
-    volume: float = 1.0
+    rate: float = Field(1.0, ge=0.5, le=2.0)
+    pitch: float = Field(0.0, ge=-50.0, le=50.0)
+    volume: float = Field(1.0, ge=0.0, le=2.0)
     script_mode: Optional[bool] = None
     role_map: Optional[dict] = None
-    mode: str = "chill"                    # 配乐风格
-    mood: Optional[str] = None             # None=根据文本情绪自适应
-    balance: str = "auto"                  # loud/auto/low：音乐音量平衡
+    mode: Literal["chill", "meditation", "ambient", "lofi"] = "chill"
+    mood: Optional[_EMOTION_KEY] = None
+    balance: Literal["loud", "auto", "low"] = "auto"
     with_subtitle: bool = False
 
 
@@ -87,22 +95,22 @@ class SegmentResult(BaseModel):
     label: str
     strength: float
     duration: float = 0.0
-    role: str = ""                         # 剧本模式下的角色名（普通模式为空）
-    voice: str = ""                        # 该段实际使用的音色
+    role: str = ""
+    voice: str = ""
     audio: str = ""
 
 
 class TaskResult(BaseModel):
     task_id: str
     status: str                            # queued/running/done/failed
-    progress: float = 0.0                  # 0-100
+    progress: float = 0.0
     message: str = ""
     segments: List[SegmentResult] = Field(default_factory=list)
     audio_url: str = ""
     subtitle_url: str = ""
-    music_url: str = ""                    # 配乐任务：纯音乐
-    mix_url: str = ""                      # 配乐任务：混合成品
-    voice_url: str = ""                    # 配乐任务：纯语音
-    music_meta: dict = Field(default_factory=dict)   # 音乐元信息
+    music_url: str = ""
+    mix_url: str = ""
+    voice_url: str = ""
+    music_meta: dict = Field(default_factory=dict)
     chars: int = 0
     duration: float = 0.0

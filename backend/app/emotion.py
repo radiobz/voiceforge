@@ -108,8 +108,7 @@ def analyze(text: str) -> tuple[str, float]:
     # 强度 = 该情绪占比（0~1），叠加原始分值
     ratio = best_score / total if total > 0 else 0
     strength = min(1.0, round(0.35 + ratio * 0.65, 2))
-    if best == "calm":
-        strength = 0.0
+    # FIX-023：删除死代码（scores 无 calm 键，best 永远不会是 calm；calm 在上方已提前返回）
     return best, strength
 
 

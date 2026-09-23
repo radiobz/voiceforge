@@ -36,7 +36,6 @@ from typing import Optional
 
 from . import edge
 
-ENGINE_LABEL = "Edge-TTS · 在线"
 ENGINE = os.environ.get("VFORGE_ENGINE", "edge").lower()
 
 _LABELS = {
@@ -45,6 +44,9 @@ _LABELS = {
     "glmtts": "GLM-TTS · 本地/API",
     "volcengine": "豆包语音 · API",
 }
+
+# FIX-017：ENGINE_LABEL 按当前引擎动态取值，而非硬编码
+ENGINE_LABEL = _LABELS.get(ENGINE, ENGINE)
 
 
 def _engine_module():
@@ -59,7 +61,12 @@ def _engine_module():
 
 
 async def list_voices(lang: str | None = None, keyword: str | None = None) -> list[dict]:
-    voices = await edge.list_voices()
+    # FIX-016：通过 _engine_module() 分发，未实现 list_voices 的引擎回退到 edge
+    mod = _engine_module()
+    if hasattr(mod, "list_voices"):
+        voices = await mod.list_voices()
+    else:
+        voices = await edge.list_voices()
     if lang:
         voices = [v for v in voices if v["locale"].startswith(lang)]
     if keyword:

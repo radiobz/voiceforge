@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random as _random
+import time
 import uuid
 
 from . import audio
@@ -25,6 +26,9 @@ from .schemas import SegmentResult, SynthesizeRequest, TaskResult
 
 _tasks: dict[str, TaskResult] = {}
 _locks: dict[str, asyncio.Lock] = {}
+# FIX-010：记录任务创建时间，用于 TTL 清理，防止 _tasks/_locks 无限增长
+_task_created: dict[str, float] = {}
+_TASK_TTL = 3600.0  # 1 小时
 
 
 def _lock(task_id: str) -> asyncio.Lock:
@@ -33,7 +37,20 @@ def _lock(task_id: str) -> asyncio.Lock:
     return _locks[task_id]
 
 
+def _evict_old_tasks() -> None:
+    """清理 done/failed 且超过 TTL 的任务；不动 running/queued。"""
+    now = time.time()
+    stale = [tid for tid, tr in _tasks.items()
+             if tr.status in ("done", "failed")
+             and now - _task_created.get(tid, now) > _TASK_TTL]
+    for tid in stale:
+        _tasks.pop(tid, None)
+        _locks.pop(tid, None)
+        _task_created.pop(tid, None)
+
+
 def get_task(task_id: str) -> TaskResult | None:
+    _evict_old_tasks()
     return _tasks.get(task_id)
 
 
@@ -41,6 +58,7 @@ def create_task(req) -> TaskResult:
     task_id = uuid.uuid4().hex[:12]
     tr = TaskResult(task_id=task_id, status="queued", message="任务已创建")
     _tasks[task_id] = tr
+    _task_created[task_id] = time.time()
     return tr
 
 
@@ -191,7 +209,8 @@ def _finalize(tr: TaskResult, req, task_dir: str, merged_mp3: str,
         if units:
             audio.make_srt_units(units, srt_path)
         else:
-            audio.make_srt([s.dict() for s in tr.segments], srt_path)
+            # FIX-011：拼接使用 silence_ms=0，字幕时间轴不再加 0.3s 块间间隙
+            audio.make_srt([s.dict() for s in tr.segments], srt_path, gap=0.0)
         tr.subtitle_url = f"/outputs/{tr.task_id}/voiceforge_{tr.task_id}.srt"
     tr.audio_url = f"/outputs/{tr.task_id}/{final_name}"
     tr.duration = sum(s.duration for s in tr.segments)
@@ -303,6 +322,7 @@ async def run_music_adapt(task_id: str, req) -> None:
     tr = _tasks[task_id]
     async with _lock(task_id):
         tr.status = "running"
+        internal_voice_task: str | None = None
         try:
             voice_task = req.task_id or ""
             voice_tr = None
@@ -318,8 +338,10 @@ async def run_music_adapt(task_id: str, req) -> None:
                     script_mode=req.script_mode, role_map=req.role_map,
                     with_subtitle=req.with_subtitle)
                 voice_task = uuid.uuid4().hex[:12]
+                internal_voice_task = voice_task
                 _tasks[voice_task] = TaskResult(task_id=voice_task, status="queued",
                                                 message="语音合成中")
+                _task_created[voice_task] = time.time()
                 await run_task(voice_task, stt)
                 voice_tr = _tasks.get(voice_task)
             if voice_tr is None or voice_tr.status != "done":
@@ -348,6 +370,13 @@ async def run_music_adapt(task_id: str, req) -> None:
             musicgen.to_mp3(mix_wav, mix_path)
             music_trim_mp3 = os.path.join(task_dir, f"voiceforge_{tr.task_id}_music.mp3")
             musicgen.to_mp3(music_trim, music_trim_mp3)
+            # FIX-013：中间 wav 文件在转 mp3 成功后删除
+            for _w in (mix_wav, music_trim):
+                if os.path.exists(_w):
+                    try:
+                        os.remove(_w)
+                    except OSError:
+                        pass
             # 交付文件：语音（复制主文件）、配乐、混音
             voice_dst = os.path.join(task_dir, f"voiceforge_{tr.task_id}_voice.mp3")
             musicgen.to_mp3(voice_path, voice_dst)
@@ -368,3 +397,9 @@ async def run_music_adapt(task_id: str, req) -> None:
         except Exception as e:
             tr.status = "failed"
             tr.message = f"配乐失败：{e}"
+        finally:
+            # FIX-012：清理 run_music_adapt 内部创建的 voice_task，避免残留
+            if internal_voice_task:
+                _tasks.pop(internal_voice_task, None)
+                _locks.pop(internal_voice_task, None)
+                _task_created.pop(internal_voice_task, None)
