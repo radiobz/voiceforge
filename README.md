@@ -65,6 +65,17 @@ docker compose up --build
 # 访问 http://localhost:8000
 ```
 
+### 部署到 Render（免费公网链接）
+
+仓库根目录已提供 [render.yaml](render.yaml)（Docker 多阶段构建：前端打包 + Python 后端 + ffmpeg）。
+
+1. 登录 [render.com](https://render.com)（可用 GitHub 账号注册，免费）
+2. Dashboard → **New → Blueprint** → 选择本仓库 `radiobz/voiceforge`
+3. Render 自动读取 render.yaml → 点 **Apply** → 等待首次构建（约 5 分钟）
+4. 完成后获得 `https://voiceforge.onrender.com` 公网链接，点开即用
+
+> 免费实例闲置约 15 分钟后休眠，首次访问需等待 30~60 秒冷启动；需要 7×24 常在线可升级付费实例。输出音频与自定义音色数据位于临时磁盘，重新部署会清空（浏览器端历史记录不受影响）。
+
 ## 项目结构 / Structure
 
 ```

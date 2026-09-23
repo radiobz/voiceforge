@@ -1,0 +1,18 @@
+# 灵声 VoiceForge - Render 一键部署配置
+#
+# 用法：Render 控制台 → New → Blueprint → 连接本 GitHub 仓库，
+#       自动读取本文件并创建 Web Service，部署完成后直接获得公网链接。
+# 注意：免费实例闲置约 15 分钟后休眠，首次访问需等待冷启动（约 30~60 秒）。
+services:
+  - type: web
+    name: voiceforge
+    runtime: docker
+    branch: master
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: VFORGE_OUTPUT_DIR
+        value: /app/voiceforge/outputs
+      - key: VFORGE_MAX_CHUNK
+        value: "1000"
