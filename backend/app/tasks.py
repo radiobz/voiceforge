@@ -16,6 +16,7 @@ import uuid
 from . import audio
 from . import engines
 from . import script as script_mod
+from . import voice_lab
 from .chunker import chunk_text
 from .config import EMOTION_LABELS, EMOTION_PROSODY, OUTPUT_DIR
 from .emotion import analyze, analyze_segments
@@ -55,9 +56,13 @@ def _prosody(req, emotion_key: str, strength: float) -> tuple[float, float, floa
 async def _synth_piece(tr: TaskResult, text: str, voice: str,
                        rate: float, pitch: float, volume: float,
                        task_dir: str, tag: str) -> str:
-    """合成单个文本片 -> 修剪前导静音 -> 返回修剪后的 mp3 路径。"""
+    """合成单个文本片 -> 修剪前导静音 -> 返回修剪后的 mp3 路径。
+
+    voice 可能是自定义音色 id（custom_xxx），此处解析为最接近的内置音色。
+    """
+    eff_voice = voice_lab.resolve_voice(voice)
     raw = os.path.join(task_dir, f"{tag}_raw.mp3")
-    await engines.synthesize(text, raw, voice, rate=rate, pitch=pitch, volume=volume)
+    await engines.synthesize(text, raw, eff_voice, rate=rate, pitch=pitch, volume=volume)
     trimmed = os.path.join(task_dir, f"{tag}.mp3")
     audio.trim_leading_silence_mp3(raw, trimmed)
     return trimmed

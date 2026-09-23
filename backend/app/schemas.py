@@ -10,6 +10,10 @@ class VoiceInfo(BaseModel):
     gender: str
     styles: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
+    voice_type: str = "edge"           # edge / custom
+    ref_wav: str = ""                  # 自定义音色参考音频（用于试听/克隆）
+    analysis: dict = Field(default_factory=dict)
+    closest: List[dict] = Field(default_factory=list)
 
 
 class FileParseResponse(BaseModel):

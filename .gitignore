@@ -10,6 +10,7 @@ frontend/dist/
 
 # 合成产物（本地运行生成）
 outputs/
+backend/data/
 *.mp3
 *.wav
 *.srt

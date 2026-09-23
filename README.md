@@ -8,6 +8,7 @@ Text-to-Speech web app: type or import text (txt / Word / PDF), pick a voice and
 
 - **多种输入方式**：手工输入、导入 `.txt` / `.docx` / `.pdf`（自动识别编码）
 - **322 个在线音色**：中英日韩等多语言，支持搜索筛选
+- **自定义音色（语音风格参考）**：导入音频或视频片段，自动提取人声并分析音色特征（性别 / 基频 / 语速 / 风格标签），推荐最接近的内置音色参与合成；参考片段持久保存，接入 CosyVoice2 后可直接用作零样本克隆素材
 - **情绪化语音**：内置轻量情绪分类（开心 / 悲伤 / 愤怒 / 平静 / 惊喜 / 恐惧），通过语速 / 音调 / 音量韵律映射自然表达
 - **剧本模式（多人有声剧）**：按 `角色名：台词` 书写即可自动识别角色与旁白，为每个角色分配不同音色（可手动指定），逐句识别情绪，输出多角色演绎的完整音频与带角色前缀的 SRT 字幕
 - **不限长文本**：自动分块 + 句级切分，逐句独立识别情绪；消除库级 4096 字节随机切块与前导静音造成的"断音"
@@ -89,7 +90,10 @@ voiceforge/
 | Method | Path | 说明 |
 | --- | --- | --- |
 | GET | `/api/health` | 健康检查 |
-| GET | `/api/voices?lang=&q=` | 音色列表（322 个，支持筛选） |
+| GET | `/api/voices?lang=&q=` | 音色列表（内置 + 自定义置顶） |
+| POST | `/api/voices/custom` | 上传音/视频片段，提取并分析为自定义音色 |
+| GET | `/api/voices/custom/{id}/audio` | 自定义音色参考音频（试听） |
+| DELETE | `/api/voices/custom/{id}` | 删除自定义音色 |
 | POST | `/api/files/parse` | 解析 txt / docx / pdf |
 | POST | `/api/emotion/analyze` | 文本情绪分析 |
 | POST | `/api/tts/synthesize` | 创建合成任务，返回 `task_id` |

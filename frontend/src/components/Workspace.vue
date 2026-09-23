@@ -64,7 +64,7 @@
     </div>
 
     <div class="two-col">
-      <VoicePanel :voices="voices" :loading="voicesLoading" :voice="voice" @select="voice = $event" @toast="emit('toast', $event)" />
+      <VoicePanel :voices="voices" :loading="voicesLoading" :voice="voice" @select="voice = $event" @toast="emit('toast', $event)" @custom-uploaded="onCustomUploaded" />
       <EmotionPanel :text="text" :auto-emotion="autoEmotion" :emotion="emotion" :strength="strength"
         :rate="rate" :pitch="pitch" :volume="volume"
         @toggle-auto="autoEmotion = !autoEmotion"
@@ -154,6 +154,21 @@ watch(text, () => {
 
 function clearText() { text.value = ''; task.value = null }
 function onImported(t) { text.value = t; emit('toast', `已导入文本 · ${t.length.toLocaleString()} 字`) }
+
+function onCustomUploaded(entry) {
+  const vo = {
+    short_name: entry.id,
+    display_name: '自定义 · ' + entry.display_name,
+    locale: 'custom',
+    gender: entry.analysis?.gender || '未知',
+    tags: entry.analysis?.tags || [],
+    voice_type: 'custom',
+    ref_wav: entry.ref_wav || '',
+    analysis: entry.analysis || {},
+    closest: entry.closest || []
+  }
+  voices.value = [vo, ...voices.value.filter(v => v.short_name !== entry.id)]
+}
 
 async function synthesize() {
   busy.value = true

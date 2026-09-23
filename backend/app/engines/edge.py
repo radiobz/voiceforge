@@ -70,6 +70,7 @@ async def list_voices() -> list[dict]:
             "gender": v.get("Gender", ""),
             "styles": [],  # 免费端点不支持 express-as，见文件头实测说明
             "tags": VOICE_TAGS.get(short, []),
+            "voice_type": "edge",
         })
     voices.sort(key=lambda v: (v["locale"].split("-")[0] != "zh", v["short_name"]))
     _voice_cache = voices

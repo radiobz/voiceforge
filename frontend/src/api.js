@@ -37,6 +37,12 @@ export const api = {
       body: JSON.stringify(payload)
     })
   },
+  uploadCustomVoice(file, name) {
+    const fd = new FormData()
+    fd.append('file', file)
+    if (name) fd.append('name', name)
+    return j('/api/voices/custom', { method: 'POST', body: fd })
+  },
   task(id) {
     return j(`/api/tasks/${id}`)
   },

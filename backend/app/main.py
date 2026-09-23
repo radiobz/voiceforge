@@ -4,16 +4,16 @@ from __future__ import annotations
 import asyncio
 import os
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import engines, tasks
+from . import engines, tasks, voice_lab
 from .config import BASE_DIR, OUTPUT_DIR
 from .parsers import parse_file
 from .schemas import (EmotionResponse, EmotionSegment, FileParseResponse,
-                      SynthesizeRequest)
+                      SynthesizeRequest, VoiceInfo)
 
 MAX_UPLOAD = 100 * 1024 * 1024  # 100MB
 
@@ -36,7 +36,58 @@ async def health():
 
 @app.get("/api/voices")
 async def voices(lang: str | None = None, q: str | None = None):
-    return await engines.list_voices(lang=lang, keyword=q)
+    base = await engines.list_voices(lang=lang, keyword=q)
+    # 自定义音色置顶
+    customs = []
+    for e in voice_lab.registry.all():
+        customs.append(VoiceInfo(
+            short_name=e["id"], display_name="自定义 · " + e["display_name"],
+            locale="custom", gender=e["analysis"].get("gender", "未知"),
+            tags=e["analysis"].get("tags", []),
+            voice_type="custom", ref_wav=e.get("ref_wav", ""),
+            analysis=e.get("analysis", {}),
+            closest=[c for c in e.get("closest", [])]))
+    if lang and lang != "custom" and lang.lower() != "zh-cn":
+        customs = []
+    if q:
+        kw = q.lower()
+        customs = [c for c in customs
+                   if kw in c.display_name.lower() or kw in "".join(c.tags).lower()]
+    return customs + base
+
+
+@app.post("/api/voices/custom")
+async def upload_custom_voice(file: UploadFile = File(...), name: str = Form("")):
+    data = await file.read()
+    all_voices = await engines.list_voices()
+    try:
+        entry = voice_lab.create_custom(file.filename or "voice.mp3", data,
+                                        name=name, voices=all_voices)
+    except ValueError as e:
+        raise ValueError(str(e)) from e
+    return entry
+
+
+@app.get("/api/voices/custom/{vid}/audio")
+async def custom_voice_audio(vid: str):
+    import os as _os
+    entry = voice_lab.registry.get(vid)
+    if not entry:
+        return {"error": "not found"}
+    wav = _os.path.join(voice_lab.REFS_DIR, f"{vid}.wav")
+    if not _os.path.exists(wav):
+        return {"error": "audio missing"}
+    return FileResponse(wav, media_type="audio/wav")
+
+
+@app.delete("/api/voices/custom/{vid}")
+async def delete_custom_voice(vid: str):
+    ok = voice_lab.registry.remove(vid)
+    import os as _os
+    wav = _os.path.join(voice_lab.REFS_DIR, f"{vid}.wav")
+    if _os.path.exists(wav):
+        _os.remove(wav)
+    return {"deleted": ok}
 
 
 @app.post("/api/files/parse")
