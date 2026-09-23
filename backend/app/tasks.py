@@ -262,7 +262,7 @@ async def run_music_generate(task_id: str, req) -> None:
         tr.status = "running"
         try:
             seconds = max(10.0, min(musicgen.MAX_SECONDS, float(req.duration)))
-            mood = req.mood or _random.choice(list(musicgen.MOODS))
+            mood = req.mood or _random.choice(musicgen.DEFAULT_MOOD_POOL)
             seed = req.seed if req.seed is not None else _random.randrange(1, 1_000_000)
             tr.progress = 15
             tr.message = f"谱曲中 · {req.mode} · {mood} · seed {seed}"

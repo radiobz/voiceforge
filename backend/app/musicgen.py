@@ -42,51 +42,54 @@ PENTA = [0, 2, 4, 7, 9]     # 大调五声（琶音/弹拨用）
 # 情绪 -> 进行 + 速度 + 亮度
 MOODS = {
     "joy":       dict(prog=[("maj7", 0), ("min7", -3), ("maj7", -4), ("M6", -2)],
-                      bpm=(70, 80), bright=1.0, kind="major"),
+                      bpm=(70, 80), bright=0.72, kind="major"),
     "calm":      dict(prog=[("sus2", 0), ("add9", -4), ("sus2", 2), ("add9", -2)],
-                      bpm=(56, 66), bright=0.6, kind="pentatonic"),
+                      bpm=(56, 66), bright=0.48, kind="pentatonic"),
     "sad":       dict(prog=[("min7", 0), ("maj7", -4), ("min7", 5), ("maj7", 7)],
-                      bpm=(50, 58), bright=0.4, kind="minor"),
+                      bpm=(50, 58), bright=0.34, kind="minor"),
     "angry":     dict(prog=[("min7", 0), ("maj7", -4), ("min7", 5), ("dom7", 7)],
-                      bpm=(64, 74), bright=0.5, kind="minor"),
+                      bpm=(64, 74), bright=0.42, kind="minor"),
     "fear":      dict(prog=[("min7", 0), ("add9", -4), ("min7", 0), ("maj7", -4)],
-                      bpm=(44, 52), bright=0.3, kind="dark"),
+                      bpm=(44, 52), bright=0.28, kind="dark"),
     "surprised": dict(prog=[("maj7", 0), ("maj7", 2), ("min7", -1), ("maj7", 7)],
-                      bpm=(76, 86), bright=1.1, kind="major"),
+                      bpm=(76, 86), bright=0.8, kind="major"),
 }
+
+# 未指定情绪时的默认基调池（偏暗暖，避免明亮大调刺耳）
+DEFAULT_MOOD_POOL = ["calm", "calm", "sad", "fear"]
 
 # 风格 -> 分层参数
 #   rhythm_def: 默认节奏密度 none/light/standard/full；swing: 八分音符摆动
 #   guitar: 是否启用吉他（Karplus-Strong 拨弦）层
 MODES = {
-    "chill":      dict(chord_len=(7, 9), arp_step=(0.28, 0.4), arp_prob=0.55,
-                       pluck=True, pad_gain=0.16, bass_gain=0.13, arp_gain=0.10,
-                       pluck_gain=0.09, noise_gain=0.030, noise_cut=420, lfo=(0.06, 0.1),
+    "chill":      dict(chord_len=(7, 9), arp_step=(0.28, 0.4), arp_prob=0.45,
+                       pluck=True, pad_gain=0.16, bass_gain=0.13, arp_gain=0.075,
+                       pluck_gain=0.06, noise_gain=0.030, noise_cut=420, lfo=(0.06, 0.1),
                        rhythm_def="light", swing=0.08, guitar=True, guitar_gain=0.065,
                        vinyl=False, wobble=False),
     "meditation": dict(chord_len=(12, 18), arp_step=(1.2, 2.0), arp_prob=0.35,
-                       pluck=False, pad_gain=0.20, bass_gain=0.17, arp_gain=0.07,
+                       pluck=False, pad_gain=0.20, bass_gain=0.17, arp_gain=0.05,
                        pluck_gain=0.0, noise_gain=0.045, noise_cut=300, lfo=(0.03, 0.06),
                        rhythm_def="none", swing=0.0, guitar=False, guitar_gain=0.0,
                        vinyl=False, wobble=False),
-    "ambient":    dict(chord_len=(9, 12), arp_step=(0.7, 1.1), arp_prob=0.45,
-                       pluck=True, pad_gain=0.18, bass_gain=0.14, arp_gain=0.08,
-                       pluck_gain=0.06, noise_gain=0.035, noise_cut=360, lfo=(0.05, 0.08),
+    "ambient":    dict(chord_len=(9, 12), arp_step=(0.7, 1.1), arp_prob=0.4,
+                       pluck=True, pad_gain=0.18, bass_gain=0.14, arp_gain=0.06,
+                       pluck_gain=0.05, noise_gain=0.035, noise_cut=360, lfo=(0.05, 0.08),
                        rhythm_def="light", swing=0.06, guitar=True, guitar_gain=0.05,
                        vinyl=False, wobble=False),
-    "lofi":       dict(chord_len=(9, 13), arp_step=(0.42, 0.6), arp_prob=0.5,
-                       pluck=True, pad_gain=0.17, bass_gain=0.15, arp_gain=0.09,
-                       pluck_gain=0.07, noise_gain=0.030, noise_cut=300, lfo=(0.05, 0.08),
+    "lofi":       dict(chord_len=(9, 13), arp_step=(0.42, 0.6), arp_prob=0.42,
+                       pluck=True, pad_gain=0.17, bass_gain=0.15, arp_gain=0.07,
+                       pluck_gain=0.055, noise_gain=0.030, noise_cut=300, lfo=(0.05, 0.08),
                        rhythm_def="standard", swing=0.12, guitar=True, guitar_gain=0.055,
                        vinyl=True, wobble=True),
 }
 
 RHYTHM_DENSITY = {"none": 0.0, "light": 0.35, "standard": 0.6, "full": 0.9}
 
-# lofi 的柔和进行（7/9 和弦为主，chill-hop 风格）
+# lofi 的柔和进行（7/9 和弦为主，chill-hop 风格；避免明亮大调 maj7 刺耳）
 LOFI_PROGS = {
-    "major": [("maj7", 0), ("min7", -3), ("maj7", -4), ("add9", -2)],
-    "minor": [("min7", 0), ("maj7", -4), ("min7", 5), ("maj7", 7)],
+    "major": [("add9", 0), ("min7", -3), ("add9", -4), ("sus2", -2)],
+    "minor": [("min7", 0), ("add9", -4), ("min7", 5), ("add9", 7)],
     "pentatonic": [("sus2", 0), ("add9", -4), ("sus2", 2), ("add9", -2)],
 }
 
@@ -142,7 +145,8 @@ def _plan(seed: int, mode: str, mood: str, seconds: float,
         if profile.get("scale"):
             scale = profile["scale"]
         if profile.get("brightness"):
-            bright = float(np.clip(profile["brightness"], 0.3, 1.2))
+            bright = float(np.clip(profile["brightness"], 0.28, 0.85))
+    bright = min(bright, 0.85)                     # 亮度上限：避免刺耳
     if mode == "lofi":
         prog = LOFI_PROGS.get(scale, LOFI_PROGS["major"])
     else:
@@ -158,27 +162,27 @@ def _plan(seed: int, mode: str, mood: str, seconds: float,
             break
         notes = [tonic + root_off + iv for iv in CHORD_PATTERNS[pat]]
         chords.append((start, end, notes, bright))
-    # 琶音事件（五声音阶 + 随机八度）
+    # 琶音事件（中低音域五声音阶点缀，整体降八度，避免高频"风铃"感）
     arps = []
     step = rng.uniform(*st["arp_step"])
     t = 0.0
     while t < seconds:
         if rng.random() < st["arp_prob"]:
             deg = rng.choice(PENTA)
-            octv = rng.choice([12, 12, 24])
-            nn = tonic + 12 + deg + octv
+            octv = rng.choice([0, 0, 12])
+            nn = min(tonic + deg + octv, tonic + 12)
             arps.append((t, rng.uniform(0.5, 0.9), _midi_to_freq(nn),
                          rng.uniform(0.6, 1.0)))
         t += step
-    # 弹拨事件（chill/ambient 的"钢琴"点缀）
+    # 弹拨事件（chill/ambient 的"钢琴"点缀，同样收敛在中低音域）
     plucks = []
     if st["pluck"]:
         t = 0.0
         pstep = rng.uniform(1.6, 2.6)
         while t < seconds:
-            if rng.random() < 0.5:
+            if rng.random() < 0.35:
                 deg = rng.choice(PENTA)
-                nn = tonic + 12 + deg + rng.choice([12, 24])
+                nn = min(tonic + deg + 12, tonic + 12)
                 plucks.append((t, rng.uniform(1.0, 1.6), _midi_to_freq(nn),
                                rng.uniform(0.7, 1.0)))
             t += pstep
