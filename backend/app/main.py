@@ -13,6 +13,7 @@ from . import engines, tasks, voice_lab
 from .config import BASE_DIR, OUTPUT_DIR
 from .parsers import parse_file
 from .schemas import (EmotionResponse, EmotionSegment, FileParseResponse,
+                      MusicAdaptRequest, MusicGenerateRequest,
                       SynthesizeRequest, VoiceInfo)
 
 MAX_UPLOAD = 100 * 1024 * 1024  # 100MB
@@ -121,6 +122,22 @@ async def emotion_analyze(body: dict):
 async def synthesize(req: SynthesizeRequest):
     tr = tasks.create_task(req)
     asyncio.get_running_loop().create_task(tasks.run_task(tr.task_id, req))
+    return {"task_id": tr.task_id}
+
+
+@app.post("/api/music/generate")
+async def music_generate(req: MusicGenerateRequest):
+    """独立生成氛围音乐（chill/冥想/氛围），随机种子，最长 40 分钟。"""
+    tr = tasks.create_task(req)
+    asyncio.get_running_loop().create_task(tasks.run_music_generate(tr.task_id, req))
+    return {"task_id": tr.task_id}
+
+
+@app.post("/api/music/adapt")
+async def music_adapt(req: MusicAdaptRequest):
+    """自适应配乐：语音（复用任务或现合成）+ 情绪/时长匹配音乐 + 混音。"""
+    tr = tasks.create_task(req)
+    asyncio.get_running_loop().create_task(tasks.run_music_adapt(tr.task_id, req))
     return {"task_id": tr.task_id}
 
 

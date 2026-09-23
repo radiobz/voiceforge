@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random as _random
 import uuid
 
 from . import audio
@@ -20,7 +21,7 @@ from . import voice_lab
 from .chunker import chunk_text
 from .config import EMOTION_LABELS, EMOTION_PROSODY, OUTPUT_DIR
 from .emotion import analyze, analyze_segments
-from .schemas import SegmentResult, TaskResult
+from .schemas import SegmentResult, SynthesizeRequest, TaskResult
 
 _tasks: dict[str, TaskResult] = {}
 _locks: dict[str, asyncio.Lock] = {}
@@ -219,3 +220,148 @@ async def run_task(task_id: str, req) -> None:
         except Exception as e:
             tr.status = "failed"
             tr.message = f"合成失败：{e}"
+
+
+# ---------------------------------------------------------------- 灵声配乐
+
+def _agg_mood(tr: TaskResult) -> str:
+    """取语音各段占比最高的情绪作为配乐基调。"""
+    counts: dict[str, int] = {}
+    for s in tr.segments:
+        counts[s.emotion] = counts.get(s.emotion, 0) + 1
+    if not counts:
+        return "calm"
+    return max(counts, key=counts.get)
+
+
+def _seg_times(tr: TaskResult) -> list[tuple[float, float]]:
+    """由分段时长推各段时间区间（拼接零静音，累计起点）。"""
+    times = []
+    cursor = 0.0
+    for s in tr.segments:
+        times.append((cursor, cursor + s.duration))
+        cursor += s.duration
+    return times
+
+
+def _voice_file(task_id: str) -> str:
+    """定位已合成语音任务的主音频文件（merged.mp3 或最终命名）。"""
+    d = os.path.join(OUTPUT_DIR, task_id)
+    for name in ("merged.mp3", f"voiceforge_{task_id}.mp3", f"voiceforge_{task_id}.wav"):
+        p = os.path.join(d, name)
+        if os.path.exists(p):
+            return p
+    return ""
+
+
+async def run_music_generate(task_id: str, req) -> None:
+    """独立音乐生成：随机 / 指定风格情绪时长种子。"""
+    from . import musicgen
+    tr = _tasks[task_id]
+    async with _lock(task_id):
+        tr.status = "running"
+        try:
+            seconds = max(10.0, min(musicgen.MAX_SECONDS, float(req.duration)))
+            mood = req.mood or _random.choice(list(musicgen.MOODS))
+            seed = req.seed if req.seed is not None else _random.randrange(1, 1_000_000)
+            tr.progress = 15
+            tr.message = f"谱曲中 · {req.mode} · {mood} · seed {seed}"
+            task_dir = os.path.join(OUTPUT_DIR, tr.task_id)
+            os.makedirs(task_dir, exist_ok=True)
+            final_name = f"voiceforge_{tr.task_id}.mp3"
+            final_path = os.path.join(task_dir, final_name)
+            meta = musicgen.generate(req.mode, mood, seconds, seed, final_path)
+            tr.progress = 96
+            tr.message = "编码 MP3"
+            tr.audio_url = f"/outputs/{tr.task_id}/{final_name}"
+            tr.music_meta = {**meta, "label": _MUSIC_MOOD_LABEL.get(mood, mood)}
+            tr.duration = seconds
+            tr.progress = 100
+            tr.status = "done"
+            tr.message = (f"音乐生成完成 · {seconds:.0f}s · {meta['key']}调 · "
+                          f"{meta['bpm']}BPM · {_MUSIC_MOOD_LABEL.get(mood, mood)} · seed {seed}")
+        except Exception as e:
+            tr.status = "failed"
+            tr.message = f"音乐生成失败：{e}"
+
+
+_MUSIC_MOOD_LABEL = {
+    "joy": "开心·明亮", "sad": "悲伤·舒缓", "calm": "平静·空灵",
+    "angry": "张力·小调", "fear": "暗色·缥缈", "surprised": "惊喜·灵动",
+}
+
+
+async def run_music_adapt(task_id: str, req) -> None:
+    """自适应配乐：语音 + 情绪/时长匹配音乐 + 音量平衡混音。
+
+    输入二选一：复用已有 TTS 任务（task_id）或直接给文本（先合成语音）。
+    """
+    from . import musicgen
+    tr = _tasks[task_id]
+    async with _lock(task_id):
+        tr.status = "running"
+        try:
+            voice_task = req.task_id or ""
+            voice_tr = None
+            if req.task_id:
+                voice_tr = _tasks.get(req.task_id)
+            if voice_tr is None and (req.text or "").strip():
+                # 先合成语音（复用现有 TTS 流水线）
+                stt = SynthesizeRequest(
+                    text=req.text, voice=req.voice, emotion=req.emotion,
+                    emotion_strength=req.emotion_strength,
+                    auto_emotion=req.auto_emotion, rate=req.rate,
+                    pitch=req.pitch, volume=req.volume,
+                    script_mode=req.script_mode, role_map=req.role_map,
+                    with_subtitle=req.with_subtitle)
+                voice_task = uuid.uuid4().hex[:12]
+                _tasks[voice_task] = TaskResult(task_id=voice_task, status="queued",
+                                                message="语音合成中")
+                await run_task(voice_task, stt)
+                voice_tr = _tasks.get(voice_task)
+            if voice_tr is None or voice_tr.status != "done":
+                raise ValueError("未找到可配乐的语音（task_id 无效且未提供文本）")
+            voice_path = _voice_file(voice_task)
+            if not voice_path:
+                raise ValueError("语音音频文件缺失")
+            # 配乐基调：文本情绪自适应 or 手动指定
+            mood = req.mood or _agg_mood(voice_tr)
+            seconds = voice_tr.duration + 2.0
+            seed = _random.randrange(1, 1_000_000)
+            tr.progress = 8
+            tr.message = f"语音就绪 · {voice_tr.duration:.1f}s · 配乐基调 {_MUSIC_MOOD_LABEL.get(mood, mood)}"
+            task_dir = os.path.join(OUTPUT_DIR, tr.task_id)
+            os.makedirs(task_dir, exist_ok=True)
+            music_path = os.path.join(task_dir, f"voiceforge_{tr.task_id}_music.mp3")
+            meta = musicgen.generate(req.mode, mood, seconds, seed, music_path)
+            tr.progress = 60
+            tr.message = "混音中（说话段自动压低音乐）"
+            mix_path = os.path.join(task_dir, f"voiceforge_{tr.task_id}_mix.mp3")
+            music_trim = os.path.join(task_dir, f"voiceforge_{tr.task_id}_music_trim.wav")
+            mix_wav = os.path.join(task_dir, f"voiceforge_{tr.task_id}_mix.wav")
+            dur = musicgen.mix_with_voice(
+                voice_path, music_path, _seg_times(voice_tr),
+                balance=req.balance, out_mix=mix_wav, out_music=music_trim)
+            musicgen.to_mp3(mix_wav, mix_path)
+            music_trim_mp3 = os.path.join(task_dir, f"voiceforge_{tr.task_id}_music.mp3")
+            musicgen.to_mp3(music_trim, music_trim_mp3)
+            # 交付文件：语音（复制主文件）、配乐、混音
+            voice_dst = os.path.join(task_dir, f"voiceforge_{tr.task_id}_voice.mp3")
+            musicgen.to_mp3(voice_path, voice_dst)
+            tr.audio_url = f"/outputs/{tr.task_id}/voiceforge_{tr.task_id}_mix.mp3"
+            tr.voice_url = f"/outputs/{tr.task_id}/voiceforge_{tr.task_id}_voice.mp3"
+            tr.music_url = f"/outputs/{tr.task_id}/voiceforge_{tr.task_id}_music.mp3"
+            tr.mix_url = tr.audio_url
+            tr.subtitle_url = voice_tr.subtitle_url
+            for s in voice_tr.segments:
+                tr.segments.append(s)
+            tr.music_meta = {**meta, "label": _MUSIC_MOOD_LABEL.get(mood, mood),
+                             "balance": req.balance}
+            tr.duration = dur
+            tr.progress = 100
+            tr.status = "done"
+            tr.message = (f"配乐完成 · 语音 {voice_tr.duration:.1f}s + 音乐 · "
+                          f"{meta['key']}调 {meta['bpm']}BPM · 平衡={req.balance}")
+        except Exception as e:
+            tr.status = "failed"
+            tr.message = f"配乐失败：{e}"

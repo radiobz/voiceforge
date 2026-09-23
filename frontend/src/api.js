@@ -37,6 +37,20 @@ export const api = {
       body: JSON.stringify(payload)
     })
   },
+  musicGenerate(payload) {
+    return j('/api/music/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+  },
+  musicAdapt(payload) {
+    return j('/api/music/adapt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+  },
   uploadCustomVoice(file, name) {
     const fd = new FormData()
     fd.append('file', file)

@@ -84,6 +84,8 @@
     <OutputCard :task="task" :busy="busy" :voice="voice" :emotion-label="emotionLabel"
       @toast="emit('toast', $event)" @done="onDone" />
 
+    <MusicPanel :task="task" @toast="emit('toast', $event)" />
+
     <ImportModal v-if="showImport" @close="showImport = false" @imported="onImported" @toast="emit('toast', $event)" />
   </div>
 </template>
@@ -95,6 +97,7 @@ import VoicePanel from './VoicePanel.vue'
 import EmotionPanel from './EmotionPanel.vue'
 import OutputCard from './OutputCard.vue'
 import ImportModal from './ImportModal.vue'
+import MusicPanel from './MusicPanel.vue'
 
 const emit = defineEmits(['toast', 'save-history'])
 

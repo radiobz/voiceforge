@@ -52,6 +52,31 @@ class SynthesizeRequest(BaseModel):
     role_map: Optional[dict] = None        # 角色->音色映射（缺省角色自动分配）
 
 
+class MusicGenerateRequest(BaseModel):
+    mode: str = "chill"                    # chill / meditation / ambient
+    duration: int = 120                    # 秒，10~2400（40 分钟）
+    mood: Optional[str] = None             # joy/sad/calm/angry/fear/surprised；None=随机
+    seed: Optional[int] = None             # None=随机种子
+
+
+class MusicAdaptRequest(BaseModel):
+    task_id: str = ""                      # 复用已合成的语音任务（优先）
+    text: str = ""                         # 或提供文本：将先按 TTS 参数合成语音
+    voice: str = "zh-CN-XiaoxiaoNeural"
+    emotion: Optional[str] = None
+    emotion_strength: float = 0.6
+    auto_emotion: bool = True
+    rate: float = 1.0
+    pitch: float = 0.0
+    volume: float = 1.0
+    script_mode: Optional[bool] = None
+    role_map: Optional[dict] = None
+    mode: str = "chill"                    # 配乐风格
+    mood: Optional[str] = None             # None=根据文本情绪自适应
+    balance: str = "auto"                  # loud/auto/low：音乐音量平衡
+    with_subtitle: bool = False
+
+
 class SegmentResult(BaseModel):
     index: int
     text: str
@@ -72,5 +97,9 @@ class TaskResult(BaseModel):
     segments: List[SegmentResult] = Field(default_factory=list)
     audio_url: str = ""
     subtitle_url: str = ""
+    music_url: str = ""                    # 配乐任务：纯音乐
+    mix_url: str = ""                      # 配乐任务：混合成品
+    voice_url: str = ""                    # 配乐任务：纯语音
+    music_meta: dict = Field(default_factory=dict)   # 音乐元信息
     chars: int = 0
     duration: float = 0.0

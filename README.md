@@ -14,6 +14,9 @@ Text-to-Speech web app: type or import text (txt / Word / PDF), pick a voice and
 - **不限长文本**：自动分块 + 句级切分，逐句独立识别情绪；消除库级 4096 字节随机切块与前导静音造成的"断音"
 - **输出**：MP3 / WAV 语音文件 + 逐段 SRT 字幕 + 浏览器内播放与下载
 - **历史记录**：最近 50 条合成记录保存在本地浏览器，可回听与重新下载
+- **灵声配乐（v0.5）**：
+  - **独立音乐生成**：算法生成 Chill / 冥想静想 / 轻氛围 氛围音乐（Brian Eno 式生成音乐），时长 1~40 分钟，情绪决定调式与速度（大调明亮 / 小调舒缓 / 五声空灵 / 暗色缥缈），每次随机生成、可用种子复现；完全离线、免费、无需任何 API
+  - **自适应配乐**：为已合成语音自动生成匹配的背景音乐——情绪决定调式、语音时长决定音乐长度；说话段自动压低音乐音量（0.25s 平滑过渡），音乐音量三档平衡（更明显 / 自动 / 压低）；输出 混音 + 纯语音 + 纯音乐 三个文件，字幕照旧
 
 ### 剧本模式示例 / Script mode example
 
@@ -34,6 +37,7 @@ Text-to-Speech web app: type or import text (txt / Word / PDF), pick a voice and
 | 前端 | Vue 3 + Vite（零 UI 框架，自绘设计系统） |
 | 后端 | FastAPI + Edge-TTS（微软神经语音，免费在线） |
 | 音频处理 | FFmpeg（分块拼接、WAV 转码） |
+| 音乐生成 | NumPy 算法合成（分层振荡器 / FFT 滤波 / 回声 / 立体声展宽，v0.5） |
 | 文档解析 | python-docx（Word）、pypdf（PDF）、charset-normalizer（编码识别） |
 
 ## 快速开始 / Quick Start
@@ -108,6 +112,8 @@ voiceforge/
 | POST | `/api/files/parse` | 解析 txt / docx / pdf |
 | POST | `/api/emotion/analyze` | 文本情绪分析 |
 | POST | `/api/tts/synthesize` | 创建合成任务，返回 `task_id` |
+| POST | `/api/music/generate` | 独立生成氛围音乐（mode/duration/mood/seed） |
+| POST | `/api/music/adapt` | 自适应配乐（复用语音任务或现合成 + 混音/音量平衡） |
 | GET | `/api/tasks/{id}` | 查询任务状态 / 结果 |
 | GET | `/api/tasks/{id}/stream` | SSE 进度推送 |
 
