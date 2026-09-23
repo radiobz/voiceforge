@@ -271,7 +271,9 @@ async def run_music_generate(task_id: str, req) -> None:
             final_name = f"voiceforge_{tr.task_id}.mp3"
             final_path = os.path.join(task_dir, final_name)
             meta = musicgen.generate(req.mode, mood, seconds, seed, final_path,
-                                     profile=getattr(req, "profile", None))
+                                     profile=getattr(req, "profile", None),
+                                     rhythm=getattr(req, "rhythm", None),
+                                     guitar=getattr(req, "guitar", None))
             tr.progress = 96
             tr.message = "编码 MP3"
             tr.audio_url = f"/outputs/{tr.task_id}/{final_name}"

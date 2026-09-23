@@ -56,24 +56,32 @@ MOODS = {
 }
 
 # 风格 -> 分层参数
+#   rhythm_def: 默认节奏密度 none/light/standard/full；swing: 八分音符摆动
+#   guitar: 是否启用吉他（Karplus-Strong 拨弦）层
 MODES = {
     "chill":      dict(chord_len=(7, 9), arp_step=(0.28, 0.4), arp_prob=0.55,
                        pluck=True, pad_gain=0.16, bass_gain=0.13, arp_gain=0.10,
                        pluck_gain=0.09, noise_gain=0.030, noise_cut=420, lfo=(0.06, 0.1),
-                       beat=False, vinyl=False, wobble=False),
+                       rhythm_def="light", swing=0.08, guitar=True, guitar_gain=0.065,
+                       vinyl=False, wobble=False),
     "meditation": dict(chord_len=(12, 18), arp_step=(1.2, 2.0), arp_prob=0.35,
                        pluck=False, pad_gain=0.20, bass_gain=0.17, arp_gain=0.07,
                        pluck_gain=0.0, noise_gain=0.045, noise_cut=300, lfo=(0.03, 0.06),
-                       beat=False, vinyl=False, wobble=False),
+                       rhythm_def="none", swing=0.0, guitar=False, guitar_gain=0.0,
+                       vinyl=False, wobble=False),
     "ambient":    dict(chord_len=(9, 12), arp_step=(0.7, 1.1), arp_prob=0.45,
                        pluck=True, pad_gain=0.18, bass_gain=0.14, arp_gain=0.08,
                        pluck_gain=0.06, noise_gain=0.035, noise_cut=360, lfo=(0.05, 0.08),
-                       beat=False, vinyl=False, wobble=False),
+                       rhythm_def="light", swing=0.06, guitar=True, guitar_gain=0.05,
+                       vinyl=False, wobble=False),
     "lofi":       dict(chord_len=(9, 13), arp_step=(0.42, 0.6), arp_prob=0.5,
                        pluck=True, pad_gain=0.17, bass_gain=0.15, arp_gain=0.09,
                        pluck_gain=0.07, noise_gain=0.030, noise_cut=300, lfo=(0.05, 0.08),
-                       beat=True, vinyl=True, wobble=True),
+                       rhythm_def="standard", swing=0.12, guitar=True, guitar_gain=0.055,
+                       vinyl=True, wobble=True),
 }
+
+RHYTHM_DENSITY = {"none": 0.0, "light": 0.35, "standard": 0.6, "full": 0.9}
 
 # lofi 的柔和进行（7/9 和弦为主，chill-hop 风格）
 LOFI_PROGS = {
@@ -104,14 +112,20 @@ def _lowpass_fft(x: np.ndarray, cutoff: float) -> np.ndarray:
 # ---------------------------------------------------------------- 事件生成
 
 def _plan(seed: int, mode: str, mood: str, seconds: float,
-          profile: dict | None = None) -> dict:
-    """由种子生成整首音乐的结构计划（和声/琶音/弹拨/鼓组/黑胶）。
+          profile: dict | None = None, rhythm: str | None = None,
+          guitar: bool | None = None) -> dict:
+    """由种子生成整首音乐的结构计划（和声/琶音/弹拨/吉他/鼓组/黑胶）。
 
     profile: audio_profile.to_params() 的风格覆盖（tonic/scale/bpm/beat/vinyl/...）。
+    rhythm: 节奏密度 none/light/standard/full，None=按风格默认（参考风格有律动时取 standard）。
+    guitar: 吉他层开关，None=按风格默认。
     """
     rng = random.Random(seed)
     mconf = MOODS[mood]
     st = MODES[mode]
+    if guitar is not None:
+        st = dict(st)
+        st["guitar"] = guitar
     tonic = rng.randint(57, 64)                      # 根音 C3~G3
     bpm = rng.randint(*mconf["bpm"])
     chord_len = rng.uniform(*st["chord_len"])
@@ -169,32 +183,50 @@ def _plan(seed: int, mode: str, mood: str, seconds: float,
                                rng.uniform(0.7, 1.0)))
             t += pstep
 
-    # ---- 鼓组（lofi：软 kick / 轻 snare / 摆动 hi-hat，4/4 + swing）
+    # ---- 吉他（Karplus-Strong 拨弦：和弦扫弦 + 指弹点缀）
+    guitar: list[tuple] = []
+    if st["guitar"]:
+        for (cs, ce, notes, _) in chords:
+            strings = [notes[0], notes[1], notes[2]]
+            if ce - cs > 2.0 and notes[0] + 12 <= 84:
+                strings.append(notes[0] + 12)
+            for k, nn in enumerate(strings):
+                guitar.append((cs + k * 0.028, _midi_to_freq(nn),
+                               rng.uniform(0.6, 0.85)))
+            t = cs + 0.5
+            while t < ce - 0.4:
+                if rng.random() < 0.55:
+                    nn = rng.choice(notes)
+                    guitar.append((t, _midi_to_freq(nn), rng.uniform(0.35, 0.6)))
+                t += rng.uniform(0.3, 0.65)
+
+    # ---- 鼓组（kick / snare / 摆动 hi-hat；节奏密度可调）
     drums: list[tuple] = []
-    beat = bool(profile.get("beat")) if profile else st["beat"]
-    density = float(profile.get("beat_density", 0.5)) if profile else 0.5
-    if beat and bpm > 0:
+    if rhythm is None:
+        rhythm = "standard" if (profile and profile.get("beat")) else st["rhythm_def"]
+    if rhythm not in RHYTHM_DENSITY:
+        rhythm = st["rhythm_def"]
+    density = RHYTHM_DENSITY[rhythm]
+    snare_on = rhythm in ("standard", "full")
+    if rhythm != "none" and bpm > 0:
         step_b = 60.0 / bpm
-        swing = 0.12 * step_b
+        swing = st["swing"] * step_b
         eighth = step_b / 2
-        density = 0.35 + 0.65 * min(1.0, max(0.1, density))
         t = 0.0
         beat_i = 0
         while t < seconds:
             bar_pos = beat_i % 4
-            # kick：1、3 拍（随密度偶尔加 3.5）
-            if bar_pos in (0, 2) and rng.random() < density:
-                drums.append(("kick", t, rng.uniform(0.85, 1.0)))
-            elif bar_pos == 3 and rng.random() < density * 0.35:
-                drums.append(("kick", t + swing, rng.uniform(0.5, 0.7)))
-            # snare：2、4 拍（轻）
-            if bar_pos in (1, 3):
-                drums.append(("snare", t, rng.uniform(0.4, 0.55)))
-            # hi-hat：八分音符，弱拍加 swing
+            if bar_pos in (0, 2) and random.Random(seed + beat_i).random() < density:
+                drums.append(("kick", t, random.Random(seed + beat_i * 7).uniform(0.85, 1.0)))
+            elif bar_pos == 3 and density > 0.7 and random.Random(seed + beat_i).random() < density * 0.4:
+                drums.append(("kick", t + swing, random.Random(seed + beat_i * 7).uniform(0.5, 0.7)))
+            if snare_on and bar_pos in (1, 3):
+                drums.append(("snare", t, random.Random(seed + beat_i * 13).uniform(0.4, 0.55)))
             for off, swing_on in ((0.0, False), (eighth, True)):
                 ht = t + off + (swing if swing_on else 0.0)
-                if ht < seconds and rng.random() < 0.75:
-                    drums.append(("hat", ht, rng.uniform(0.35, 0.6)))
+                p = 0.75 if rhythm != "full" else 0.9
+                if ht < seconds and random.Random(seed + beat_i * 3).random() < p:
+                    drums.append(("hat", ht, random.Random(seed + beat_i * 17).uniform(0.35, 0.6)))
             t += step_b
             beat_i += 1
 
@@ -209,9 +241,10 @@ def _plan(seed: int, mode: str, mood: str, seconds: float,
                 bursts.append((t, rng.uniform(0.012, 0.03) * (0.4 + vinyl)))
             t += 0.25
     return dict(rng=rng, tonic=tonic, bpm=bpm, mode=mode, mood=mood,
-                chords=chords, arps=arps, plucks=plucks, drums=drums,
-                bursts=bursts, vinyl=vinyl, beat=beat, seconds=seconds,
-                bright=bright, st=st, np_seed=rng.randrange(0, 2 ** 31))
+                chords=chords, arps=arps, plucks=plucks, guitar=guitar, drums=drums,
+                bursts=bursts, vinyl=vinyl, beat=rhythm != "none", rhythm=rhythm,
+                seconds=seconds, bright=bright, st=st,
+                np_seed=rng.randrange(0, 2 ** 31))
 
 
 # ---------------------------------------------------------------- 渲染
@@ -289,6 +322,33 @@ def _render_block(plan: dict, b0: float, b1: float) -> np.ndarray:
     spark[-edge:] *= np.linspace(1.0, 0.0, edge)
     bus[:n] += spark[:n]
 
+    # ---- 吉他（Karplus-Strong 拨弦：块迭代反馈延迟线）
+    guitar_bus = np.zeros(n2, dtype=np.float32)
+    g_gain = st["guitar_gain"]
+    for (t0, freq, vel) in plan["guitar"]:
+        if t0 < b0 or t0 > b1 + 0.5:
+            continue
+        period = max(40, int(SR / freq))
+        sustain = 2.2
+        n_periods = min(int(sustain * freq), int((b1 + 2.0 - t0) * SR) // period)
+        if n_periods <= 0:
+            continue
+        rng_np = np.random.default_rng(plan["np_seed"] ^ int(t0 * 133357))
+        buf = rng_np.normal(0, 1, period).astype(np.float32) * vel
+        decay = 10 ** (-2.0 / max(0.1, sustain * freq))
+        out = np.empty(n_periods * period, dtype=np.float32)
+        for b in range(n_periods):
+            seg = buf
+            out[b * period:(b + 1) * period] = seg
+            buf = (seg + np.roll(seg, -1)) * 0.5 * decay
+        i0 = int((t0 - b0) * SR)
+        seg_len = min(len(out), n2 - i0)
+        if seg_len > 0:
+            guitar_bus[i0:i0 + seg_len] += out[:seg_len] * g_gain
+    gedge = int(0.003 * SR)
+    guitar_bus[:gedge] *= np.linspace(0.0, 1.0, gedge)
+    bus[:n] += guitar_bus[:n]
+
     # ---- 鼓组（kick 正弦音高下滑 / snare 噪声+中频 / hat 短噪声）
     drum_bus = np.zeros(n2, dtype=np.float32)
     for ev in plan["drums"]:
@@ -363,13 +423,15 @@ def _render_block(plan: dict, b0: float, b1: float) -> np.ndarray:
 
 
 def generate_plan(mode: str, mood: str, seconds: float, seed: int,
-                  profile: dict | None = None) -> dict:
+                  profile: dict | None = None, rhythm: str | None = None,
+                  guitar: bool | None = None) -> dict:
     if mode not in MODES:
         raise ValueError(f"未知风格：{mode}（可选 {list(MODES)}）")
     if mood not in MOODS:
         raise ValueError(f"未知情绪：{mood}（可选 {list(MOODS)}）")
     seconds = max(10.0, min(MAX_SECONDS, float(seconds)))
-    return _plan(seed, mode, mood, seconds, profile=profile)
+    return _plan(seed, mode, mood, seconds, profile=profile, rhythm=rhythm,
+                 guitar=guitar)
 
 
 def render_wav(plan: dict, out_wav: str) -> None:
@@ -412,15 +474,19 @@ def to_mp3(wav_path: str, mp3_path: str, bitrate: str = "192k") -> None:
 
 
 def generate(mode: str, mood: str, seconds: float, seed: int,
-             out_mp3: str, profile: dict | None = None) -> dict:
+             out_mp3: str, profile: dict | None = None,
+             rhythm: str | None = None, guitar: bool | None = None) -> dict:
     """一键生成：plan -> WAV -> MP3，返回元信息（支持风格 profile 覆盖）。"""
-    plan = generate_plan(mode, mood, seconds, seed, profile=profile)
+    plan = generate_plan(mode, mood, seconds, seed, profile=profile, rhythm=rhythm,
+                         guitar=guitar)
     wav = out_mp3.rsplit(".", 1)[0] + ".wav"
     render_wav(plan, wav)
     to_mp3(wav, out_mp3)
     meta = dict(mode=mode, mood=mood, seed=seed, seconds=seconds,
                 key=_note_name(plan["tonic"]), bpm=plan["bpm"],
-                kind=MOODS[mood]["kind"], beat=plan["beat"])
+                kind=MOODS[mood]["kind"], beat=plan["beat"],
+                rhythm=plan["rhythm"],
+                guitar=bool(plan["guitar"]))
     if profile:
         meta["from_profile"] = True
         meta["vinyl"] = round(plan["vinyl"], 3)

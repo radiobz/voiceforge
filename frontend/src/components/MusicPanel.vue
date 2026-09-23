@@ -31,6 +31,19 @@
               <option v-for="e in MOOD_OPTS" :key="e.key" :value="e.key">{{ e.label }}</option>
             </select>
           </div>
+          <div class="ctl">
+            <label>节奏密度</label>
+            <select v-model="genRhythm">
+              <option value="">自动</option>
+              <option v-for="r in RHYTHM_OPTS" :key="r.key" :value="r.key">{{ r.label }}</option>
+            </select>
+          </div>
+          <div class="ctl">
+            <label>乐器</label>
+            <div class="chips-row">
+              <button class="chip" :class="{on: genGuitar}" @click="genGuitar = !genGuitar">吉他</button>
+            </div>
+          </div>
         </div>
         <div class="btn-row">
           <button class="btn primary" :disabled="genBusy" @click="generateMusic">
@@ -64,6 +77,8 @@
             <span v-if="genTask.music_meta.from_profile" class="chip accent">参考风格</span>
             <span class="chip">{{ genTask.music_meta.key }}调</span>
             <span class="chip">{{ genTask.music_meta.bpm }} BPM</span>
+            <span v-if="genTask.music_meta.rhythm !== 'none'" class="chip">{{ ({none:'无节奏',light:'轻鼓点',standard:'标准',full:'饱满'})[genTask.music_meta.rhythm] }}</span>
+            <span v-if="genTask.music_meta.guitar" class="chip">吉他</span>
             <span class="chip">{{ genTask.music_meta.kind }}</span>
             <span class="chip mono">seed {{ genTask.music_meta.seed }}</span>
           </div>
@@ -187,10 +202,18 @@ const MOOD_OPTS = [
   { key: 'fear', label: '暗色·缥缈' },
   { key: 'surprised', label: '惊喜·灵动' }
 ]
+const RHYTHM_OPTS = [
+  { key: 'none', label: '无节奏' },
+  { key: 'light', label: '轻鼓点' },
+  { key: 'standard', label: '标准' },
+  { key: 'full', label: '饱满' }
+]
 
 const genMode = ref('chill')
 const genMin = ref(3)
 const genMood = ref('')
+const genRhythm = ref('')
+const genGuitar = ref(true)
 const genBusy = ref(false)
 const genTask = ref(null)
 const anaBusy = ref(false)
@@ -242,6 +265,8 @@ async function generateMusic() {
       mode: genMode.value,
       duration: genMin.value * 60,
       mood: genMood.value || null,
+      rhythm: genRhythm.value || null,
+      guitar: genGuitar.value,
       profile: anaProfile.value || null
     })
     poll(task_id, d => { genTask.value = d })

@@ -58,6 +58,8 @@ class MusicGenerateRequest(BaseModel):
     mood: Optional[str] = None             # joy/sad/calm/angry/fear/surprised；None=随机
     seed: Optional[int] = None             # None=随机种子
     profile: Optional[dict] = None         # 风格分析覆盖（audio_profile.to_params 输出）
+    rhythm: Optional[str] = None           # 节奏密度 none/light/standard/full；None=按风格默认
+    guitar: Optional[bool] = None          # 吉他层开关；None=按风格默认
 
 
 class MusicAdaptRequest(BaseModel):
