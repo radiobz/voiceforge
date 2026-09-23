@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random as _random
+import shutil
 import time
 import uuid
 
@@ -20,7 +21,8 @@ from . import engines
 from . import script as script_mod
 from . import voice_lab
 from .chunker import chunk_text
-from .config import EMOTION_LABELS, EMOTION_PROSODY, OUTPUT_DIR
+from .config import (EMOTION_LABELS, EMOTION_PROSODY, OUTPUT_DIR,
+                     TTS_CONCURRENCY)
 from .emotion import analyze, analyze_segments
 from .schemas import SegmentResult, SynthesizeRequest, TaskResult
 
@@ -29,6 +31,36 @@ _locks: dict[str, asyncio.Lock] = {}
 # FIX-010：记录任务创建时间，用于 TTL 清理，防止 _tasks/_locks 无限增长
 _task_created: dict[str, float] = {}
 _TASK_TTL = 3600.0  # 1 小时
+
+# 运行中任务句柄（用于取消）
+_running_async_tasks: dict[str, asyncio.Task] = {}
+
+
+def register_running(task_id: str, task: asyncio.Task):
+    _running_async_tasks[task_id] = task
+
+
+def unregister_running(task_id: str):
+    _running_async_tasks.pop(task_id, None)
+
+
+def cancel_task(task_id: str) -> bool:
+    t = _running_async_tasks.get(task_id)
+    if t and not t.done():
+        t.cancel()
+        return True
+    return False
+
+
+# TTS 并发信号量（懒加载，避免模块导入时无事件循环）
+_tts_sem: asyncio.Semaphore | None = None
+
+
+def _get_sem() -> asyncio.Semaphore:
+    global _tts_sem
+    if _tts_sem is None:
+        _tts_sem = asyncio.Semaphore(TTS_CONCURRENCY)
+    return _tts_sem
 
 
 def _lock(task_id: str) -> asyncio.Lock:
@@ -47,6 +79,8 @@ def _evict_old_tasks() -> None:
         _tasks.pop(tid, None)
         _locks.pop(tid, None)
         _task_created.pop(tid, None)
+        # 同步删除 outputs/ 下对应任务目录，避免中间产物无限堆积
+        shutil.rmtree(os.path.join(OUTPUT_DIR, tid), ignore_errors=True)
 
 
 def get_task(task_id: str) -> TaskResult | None:
@@ -84,15 +118,17 @@ async def _synth_piece(tr: TaskResult, text: str, voice: str,
     """
     eff_voice = voice_lab.resolve_voice(voice)
     raw = os.path.join(task_dir, f"{tag}_raw.mp3")
-    await engines.synthesize(text, raw, eff_voice, rate=rate, pitch=pitch,
-                             volume=volume, emotion=emotion, strength=strength)
     trimmed = os.path.join(task_dir, f"{tag}.mp3")
-    audio.trim_leading_silence_mp3(raw, trimmed)
+    # 每个 piece 内部 acquire 信号量，实现有界并发
+    async with _get_sem():
+        await engines.synthesize(text, raw, eff_voice, rate=rate, pitch=pitch,
+                                 volume=volume, emotion=emotion, strength=strength)
+        await audio.trim_leading_silence_mp3_async(raw, trimmed)
     return trimmed
 
 
 async def _run_plain(tr: TaskResult, req, text: str) -> None:
-    """普通模式：分块 -> 分句 -> 逐句情绪合成。"""
+    """普通模式：分块 -> 分句 -> 并行 piece 合成（有界并发）-> 拼接。"""
     chunks = chunk_text(text)
     if not chunks:
         raise ValueError("文本无法分块")
@@ -110,31 +146,69 @@ async def _run_plain(tr: TaskResult, req, text: str) -> None:
 
     task_dir = os.path.join(OUTPUT_DIR, tr.task_id)
     os.makedirs(task_dir, exist_ok=True)
-    total = len(chunks)
-    seg_files: list[str] = []
+
+    # 预计算每个 chunk 的韵律参数与 pieces，展平为所有 piece 的作业列表
+    jobs: list[dict] = []
+    chunk_plan: list[dict] = []
     for i, (chunk, meta) in enumerate(zip(chunks, seg_meta)):
         rate, pitch, volume = _prosody(req, meta["emotion"], meta["strength"])
         pieces = engines.split_for_tts(chunk)
-        piece_paths = []
+        chunk_plan.append({"chunk": chunk, "meta": meta, "n_pieces": len(pieces)})
         for j, piece in enumerate(pieces):
-            p = await _synth_piece(tr, piece, req.voice, rate, pitch, volume,
-                                   meta["emotion"], meta["strength"],
-                                   task_dir, f"seg_{i:03d}_p{j:02d}")
-            piece_paths.append(p)
+            jobs.append({
+                "chunk_idx": i, "piece_idx": j, "text": piece,
+                "rate": rate, "pitch": pitch, "volume": volume,
+                "emotion": meta["emotion"], "strength": meta["strength"],
+                "tag": f"seg_{i:03d}_p{j:02d}",
+            })
+
+    total = len(jobs)
+    completed = 0
+
+    async def _job(job: dict) -> tuple[int, int, str]:
+        nonlocal completed
+        p = await _synth_piece(tr, job["text"], req.voice, job["rate"],
+                               job["pitch"], job["volume"], job["emotion"],
+                               job["strength"], task_dir, job["tag"])
+        completed += 1
+        tr.progress = 12 + round(78 * completed / total, 1)
+        tr.message = f"正在合成 {completed}/{total}"
+        return job["chunk_idx"], job["piece_idx"], p
+
+    # gather 并发执行所有 piece（每个内部 acquire 信号量），返回顺序与输入一致
+    results = await asyncio.gather(*[_job(j) for j in jobs])
+
+    # 按 chunk_idx 分组，piece 路径按 piece_idx 排序，保证拼接顺序与串行版一致
+    piece_paths_by_chunk: list[list[str]] = [[] for _ in chunks]
+    for ci, pi, path in results:
+        piece_paths_by_chunk[ci].append((pi, path))
+    for i in range(len(chunks)):
+        piece_paths_by_chunk[i].sort(key=lambda x: x[0])
+        piece_paths_by_chunk[i] = [p for _, p in piece_paths_by_chunk[i]]
+
+    # 逐 chunk 拼接 pieces -> seg_mp3，并取时长（跨 chunk 并行）
+    async def _build_seg(i: int):
         seg_path = os.path.join(task_dir, f"seg_{i:03d}.mp3")
-        audio.concat_mp3(piece_paths, seg_path, silence_ms=0)
+        await audio.concat_mp3_async(piece_paths_by_chunk[i], seg_path, silence_ms=0)
+        dur = await audio.duration_ms_async(seg_path)
+        return i, seg_path, dur
+
+    seg_results = await asyncio.gather(*[_build_seg(i) for i in range(len(chunks))])
+    seg_results.sort(key=lambda x: x[0])
+
+    seg_files: list[str] = []
+    for i, seg_path, dur in seg_results:
         seg_files.append(seg_path)
-        dur = audio.duration_ms(seg_path)
+        meta = chunk_plan[i]["meta"]
         tr.segments.append(SegmentResult(
-            index=i + 1, text=chunk, emotion=meta["emotion"],
+            index=i + 1, text=chunks[i], emotion=meta["emotion"],
             label=meta["label"], strength=meta["strength"], duration=dur,
             voice=req.voice))
-        tr.progress = 12 + round(78 * (i + 1) / total, 1)
-        tr.message = f"正在合成 {i + 1}/{total}：{meta['label']}"
+
     tr.message = "音频拼接中"
     merged_mp3 = os.path.join(task_dir, "merged.mp3")
-    audio.concat_mp3(seg_files, merged_mp3, silence_ms=0)
-    _finalize(tr, req, task_dir, merged_mp3)
+    await audio.concat_mp3_async(seg_files, merged_mp3, silence_ms=0)
+    await _finalize(tr, req, task_dir, merged_mp3)
 
 
 async def _run_script(tr: TaskResult, req, text: str) -> None:
@@ -163,9 +237,9 @@ async def _run_script(tr: TaskResult, req, text: str) -> None:
 
     task_dir = os.path.join(OUTPUT_DIR, tr.task_id)
     os.makedirs(task_dir, exist_ok=True)
-    total = len(lines)
-    piece_paths: list[str] = []
-    units: list[dict] = []
+
+    # 预计算所有行的情绪、韵律、音色
+    plan: list[dict] = []
     for i, ln in enumerate(lines):
         emo, st = analyze(ln["text"])
         if not req.auto_emotion and req.emotion:
@@ -174,24 +248,49 @@ async def _run_script(tr: TaskResult, req, text: str) -> None:
         label = EMOTION_LABELS.get(emo, emo)
         rate, pitch, volume = _prosody(req, emo, st)
         voice = role_voices.get(ln["role"], req.voice)
-        p = await _synth_piece(tr, ln["text"], voice, rate, pitch, volume,
-                               emo, st, task_dir, f"line_{i:04d}")
+        plan.append({"ln": ln, "emo": emo, "st": st, "label": label,
+                     "rate": rate, "pitch": pitch, "volume": volume,
+                     "voice": voice})
+
+    total = len(plan)
+    completed = 0
+
+    async def _line_job(i: int):
+        nonlocal completed
+        pl = plan[i]
+        p = await _synth_piece(tr, pl["ln"]["text"], pl["voice"], pl["rate"],
+                               pl["pitch"], pl["volume"], pl["emo"], pl["st"],
+                               task_dir, f"line_{i:04d}")
+        completed += 1
+        tr.progress = 12 + round(78 * completed / total, 1)
+        tr.message = f"正在合成 {completed}/{total}：{pl['ln']['role']} · {pl['label']}"
+        return i, p
+
+    # 所有行并发合成（gather + 信号量），结果按行序排列
+    line_results = await asyncio.gather(*[_line_job(i) for i in range(total)])
+    line_results.sort(key=lambda x: x[0])
+
+    piece_paths: list[str] = []
+    units: list[dict] = []
+    for i, p in line_results:
+        pl = plan[i]
         piece_paths.append(p)
-        dur = audio.duration_ms(p)
-        units.append({"role": ln["role"], "text": ln["text"], "emotion": emo,
-                      "label": label, "strength": st, "duration": dur, "voice": voice})
+        dur = await audio.duration_ms_async(p)
+        ln = pl["ln"]
+        units.append({"role": ln["role"], "text": ln["text"], "emotion": pl["emo"],
+                      "label": pl["label"], "strength": pl["st"], "duration": dur,
+                      "voice": pl["voice"]})
         tr.segments.append(SegmentResult(
-            index=i + 1, text=ln["text"], emotion=emo, label=label,
-            strength=st, duration=dur, role=ln["role"], voice=voice))
-        tr.progress = 12 + round(78 * (i + 1) / total, 1)
-        tr.message = f"正在合成 {i + 1}/{total}：{ln['role']} · {label}"
+            index=i + 1, text=ln["text"], emotion=pl["emo"], label=pl["label"],
+            strength=pl["st"], duration=dur, role=ln["role"], voice=pl["voice"]))
+
     tr.message = "音频拼接中"
     merged_mp3 = os.path.join(task_dir, "merged.mp3")
-    audio.concat_mp3(piece_paths, merged_mp3, silence_ms=0)
-    _finalize(tr, req, task_dir, merged_mp3, units=units)
+    await audio.concat_mp3_async(piece_paths, merged_mp3, silence_ms=0)
+    await _finalize(tr, req, task_dir, merged_mp3, units=units)
 
 
-def _finalize(tr: TaskResult, req, task_dir: str, merged_mp3: str,
+async def _finalize(tr: TaskResult, req, task_dir: str, merged_mp3: str,
               units: list[dict] | None = None) -> None:
     """输出格式转换 + 字幕 + 收尾字段。"""
     tr.progress = 94
@@ -199,7 +298,7 @@ def _finalize(tr: TaskResult, req, task_dir: str, merged_mp3: str,
     final_name = f"voiceforge_{tr.task_id}.{fmt}"
     final_path = os.path.join(task_dir, final_name)
     if fmt == "wav":
-        audio.to_wav(merged_mp3, final_path)
+        await audio.to_wav_async(merged_mp3, final_path)
     else:
         if os.path.exists(merged_mp3) and os.path.abspath(final_path) != os.path.abspath(merged_mp3):
             os.replace(merged_mp3, final_path)
@@ -221,6 +320,8 @@ def _finalize(tr: TaskResult, req, task_dir: str, merged_mp3: str,
 
 async def run_task(task_id: str, req) -> None:
     tr = _tasks[task_id]
+    register_running(task_id, asyncio.current_task())
+    task_dir = os.path.join(OUTPUT_DIR, task_id)
     async with _lock(task_id):
         tr.status = "running"
         try:
@@ -236,9 +337,16 @@ async def run_task(task_id: str, req) -> None:
                 await _run_script(tr, req, text)
             else:
                 await _run_plain(tr, req, text)
+        except asyncio.CancelledError:
+            tr.status = "failed"
+            tr.message = "任务已取消"
+            shutil.rmtree(task_dir, ignore_errors=True)
+            raise
         except Exception as e:
             tr.status = "failed"
             tr.message = f"合成失败：{e}"
+        finally:
+            unregister_running(task_id)
 
 
 # ---------------------------------------------------------------- 灵声配乐
@@ -277,6 +385,8 @@ async def run_music_generate(task_id: str, req) -> None:
     """独立音乐生成：随机 / 指定风格情绪时长种子。"""
     from . import musicgen
     tr = _tasks[task_id]
+    register_running(task_id, asyncio.current_task())
+    task_dir = os.path.join(OUTPUT_DIR, task_id)
     async with _lock(task_id):
         tr.status = "running"
         try:
@@ -289,10 +399,11 @@ async def run_music_generate(task_id: str, req) -> None:
             os.makedirs(task_dir, exist_ok=True)
             final_name = f"voiceforge_{tr.task_id}.mp3"
             final_path = os.path.join(task_dir, final_name)
-            meta = musicgen.generate(req.mode, mood, seconds, seed, final_path,
-                                     profile=getattr(req, "profile", None),
-                                     rhythm=getattr(req, "rhythm", None),
-                                     guitar=getattr(req, "guitar", None))
+            # musicgen.generate 为纯 CPU 同步函数，丢线程池避免阻塞事件循环
+            meta = await asyncio.to_thread(
+                musicgen.generate, req.mode, mood, seconds, seed, final_path,
+                getattr(req, "profile", None), getattr(req, "rhythm", None),
+                getattr(req, "guitar", None))
             tr.progress = 96
             tr.message = "编码 MP3"
             tr.audio_url = f"/outputs/{tr.task_id}/{final_name}"
@@ -302,9 +413,16 @@ async def run_music_generate(task_id: str, req) -> None:
             tr.status = "done"
             tr.message = (f"音乐生成完成 · {seconds:.0f}s · {meta['key']}调 · "
                           f"{meta['bpm']}BPM · {_MUSIC_MOOD_LABEL.get(mood, mood)} · seed {seed}")
+        except asyncio.CancelledError:
+            tr.status = "failed"
+            tr.message = "任务已取消"
+            shutil.rmtree(task_dir, ignore_errors=True)
+            raise
         except Exception as e:
             tr.status = "failed"
             tr.message = f"音乐生成失败：{e}"
+        finally:
+            unregister_running(task_id)
 
 
 _MUSIC_MOOD_LABEL = {
@@ -320,6 +438,8 @@ async def run_music_adapt(task_id: str, req) -> None:
     """
     from . import musicgen
     tr = _tasks[task_id]
+    register_running(task_id, asyncio.current_task())
+    task_dir = os.path.join(OUTPUT_DIR, task_id)
     async with _lock(task_id):
         tr.status = "running"
         internal_voice_task: str | None = None
@@ -358,18 +478,19 @@ async def run_music_adapt(task_id: str, req) -> None:
             task_dir = os.path.join(OUTPUT_DIR, tr.task_id)
             os.makedirs(task_dir, exist_ok=True)
             music_path = os.path.join(task_dir, f"voiceforge_{tr.task_id}_music.mp3")
-            meta = musicgen.generate(req.mode, mood, seconds, seed, music_path)
+            meta = await asyncio.to_thread(
+                musicgen.generate, req.mode, mood, seconds, seed, music_path)
             tr.progress = 60
             tr.message = "混音中（说话段自动压低音乐）"
             mix_path = os.path.join(task_dir, f"voiceforge_{tr.task_id}_mix.mp3")
             music_trim = os.path.join(task_dir, f"voiceforge_{tr.task_id}_music_trim.wav")
             mix_wav = os.path.join(task_dir, f"voiceforge_{tr.task_id}_mix.wav")
-            dur = musicgen.mix_with_voice(
-                voice_path, music_path, _seg_times(voice_tr),
-                balance=req.balance, out_mix=mix_wav, out_music=music_trim)
-            musicgen.to_mp3(mix_wav, mix_path)
+            dur = await asyncio.to_thread(
+                musicgen.mix_with_voice, voice_path, music_path, _seg_times(voice_tr),
+                req.balance, mix_wav, music_trim)
+            await asyncio.to_thread(musicgen.to_mp3, mix_wav, mix_path)
             music_trim_mp3 = os.path.join(task_dir, f"voiceforge_{tr.task_id}_music.mp3")
-            musicgen.to_mp3(music_trim, music_trim_mp3)
+            await asyncio.to_thread(musicgen.to_mp3, music_trim, music_trim_mp3)
             # FIX-013：中间 wav 文件在转 mp3 成功后删除
             for _w in (mix_wav, music_trim):
                 if os.path.exists(_w):
@@ -379,7 +500,7 @@ async def run_music_adapt(task_id: str, req) -> None:
                         pass
             # 交付文件：语音（复制主文件）、配乐、混音
             voice_dst = os.path.join(task_dir, f"voiceforge_{tr.task_id}_voice.mp3")
-            musicgen.to_mp3(voice_path, voice_dst)
+            await asyncio.to_thread(musicgen.to_mp3, voice_path, voice_dst)
             tr.audio_url = f"/outputs/{tr.task_id}/voiceforge_{tr.task_id}_mix.mp3"
             tr.voice_url = f"/outputs/{tr.task_id}/voiceforge_{tr.task_id}_voice.mp3"
             tr.music_url = f"/outputs/{tr.task_id}/voiceforge_{tr.task_id}_music.mp3"
@@ -394,6 +515,11 @@ async def run_music_adapt(task_id: str, req) -> None:
             tr.status = "done"
             tr.message = (f"配乐完成 · 语音 {voice_tr.duration:.1f}s + 音乐 · "
                           f"{meta['key']}调 {meta['bpm']}BPM · 平衡={req.balance}")
+        except asyncio.CancelledError:
+            tr.status = "failed"
+            tr.message = "任务已取消"
+            shutil.rmtree(task_dir, ignore_errors=True)
+            raise
         except Exception as e:
             tr.status = "failed"
             tr.message = f"配乐失败：{e}"
@@ -403,3 +529,4 @@ async def run_music_adapt(task_id: str, req) -> None:
                 _tasks.pop(internal_voice_task, None)
                 _locks.pop(internal_voice_task, None)
                 _task_created.pop(internal_voice_task, None)
+            unregister_running(task_id)

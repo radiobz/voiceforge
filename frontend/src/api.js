@@ -65,6 +65,9 @@ export const api = {
   task(id) {
     return j(`/api/tasks/${id}`)
   },
+  cancelTask(id) {
+    return j(`/api/tasks/${id}`, { method: 'DELETE' })
+  },
   taskStream(id, onData) {
     const es = new EventSource(`${BASE}/api/tasks/${id}/stream`)
     es.onmessage = e => {

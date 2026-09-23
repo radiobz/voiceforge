@@ -11,6 +11,10 @@ MAX_CHUNK_CHARS = int(os.environ.get("VFORGE_MAX_CHUNK", "1000"))   # 单块最�
 OVERLAP_SENTENCES = 0                                               # 块间重叠句子数（0 = 不重复合成，避免同一句被读两遍）
 JOIN_SILENCE_MS = int(os.environ.get("VFORGE_JOIN_SILENCE", "0"))   # 块间额外静音（0 = 沿用模型自身的句末自然停顿）
 
+# TTS 并发：长文本/剧本模式下 piece 级并行合成的有界并发数。
+# Edge-TTS 为网络 IO，并发受端点限流影响；过大可能触发 403/超时，过小则无加速。
+TTS_CONCURRENCY = int(os.environ.get("VFORGE_TTS_CONCURRENCY", "6"))
+
 # Edge-TTS
 EDGE_VOICE = os.environ.get("VFORGE_EDGE_VOICE", "zh-CN-XiaoxiaoNeural")
 EDGE_RATE = os.environ.get("VFORGE_EDGE_RATE", "+0%")

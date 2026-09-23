@@ -4,10 +4,12 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (FileResponse, JSONResponse, Response,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 
 from . import engines, tasks, voice_lab
@@ -34,8 +36,36 @@ async def value_error_handler(request, exc: ValueError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
+@app.middleware("http")
+async def cache_control_middleware(request: Request, call_next):
+    """静态资源缓存策略：Vite 带 hash 资源长缓存，index.html 不缓存，输出不缓存。"""
+    response: Response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/assets/") and any(
+            path.endswith(ext) for ext in (".js", ".css", ".woff2", ".png",
+                                            ".jpg", ".svg", ".ico")):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path == "/" or path.endswith("/index.html") or path.endswith(".html"):
+        response.headers["Cache-Control"] = "no-cache"
+    elif path.startswith("/outputs/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 # FIX-008：保存后台任务句柄，避免被 GC 回收导致任务静默取消
 _background_tasks: set = set()
+
+# /api/voices 列表缓存（edge 音色已在引擎层缓存，这里再缓存组装结果，
+# 自定义音色上传/删除时主动失效；并加 60s TTL 兜底）
+_voices_cache: list | None = None
+_voices_cache_time: float = 0.0
+_VOICES_CACHE_TTL = 60.0
+
+
+def _invalidate_voices_cache():
+    global _voices_cache, _voices_cache_time
+    _voices_cache = None
+    _voices_cache_time = 0.0
 
 
 def _run_bg(coro):
@@ -56,6 +86,11 @@ async def health():
 
 @app.get("/api/voices")
 async def voices(lang: str | None = None, q: str | None = None):
+    global _voices_cache, _voices_cache_time
+    # 无过滤条件时命中 60s TTL 缓存；带 lang/q 过滤的请求实时计算，保证过滤语义
+    if lang is None and q is None and _voices_cache is not None \
+            and (time.time() - _voices_cache_time) < _VOICES_CACHE_TTL:
+        return list(_voices_cache)
     base = await engines.list_voices(lang=lang, keyword=q)
     # 自定义音色置顶
     customs = []
@@ -73,7 +108,11 @@ async def voices(lang: str | None = None, q: str | None = None):
         kw = q.lower()
         customs = [c for c in customs
                    if kw in c.display_name.lower() or kw in "".join(c.tags).lower()]
-    return customs + base
+    result = customs + base
+    if lang is None and q is None:
+        _voices_cache = result
+        _voices_cache_time = time.time()
+    return result
 
 
 @app.post("/api/voices/custom")
@@ -88,6 +127,7 @@ async def upload_custom_voice(file: UploadFile = File(...), name: str = Form("")
     # FIX-004：删除无意义的 except ValueError 包裹，ValueError 由全局处理器转 400
     entry = voice_lab.create_custom(file.filename or "voice.mp3", data,
                                     name=name, voices=all_voices)
+    _invalidate_voices_cache()
     return entry
 
 
@@ -113,6 +153,7 @@ async def delete_custom_voice(vid: str):
     if not ok:
         # registry 未命中则不删文件
         return {"deleted": False}
+    _invalidate_voices_cache()
     import os as _os
     wav = _os.path.realpath(_os.path.join(voice_lab.REFS_DIR, f"{vid}.wav"))
     refs_root = _os.path.realpath(voice_lab.REFS_DIR)
@@ -159,7 +200,8 @@ async def emotion_analyze(body: EmotionRequest):
 async def synthesize(req: SynthesizeRequest):
     tr = tasks.create_task(req)
     # FIX-008：保存任务句柄
-    _run_bg(tasks.run_task(tr.task_id, req))
+    bg = _run_bg(tasks.run_task(tr.task_id, req))
+    tasks.register_running(tr.task_id, bg)
     return {"task_id": tr.task_id}
 
 
@@ -167,7 +209,8 @@ async def synthesize(req: SynthesizeRequest):
 async def music_generate(req: MusicGenerateRequest):
     """独立生成氛围音乐（chill/冥想/氛围），随机种子，最长 40 分钟。"""
     tr = tasks.create_task(req)
-    _run_bg(tasks.run_music_generate(tr.task_id, req))
+    bg = _run_bg(tasks.run_music_generate(tr.task_id, req))
+    tasks.register_running(tr.task_id, bg)
     return {"task_id": tr.task_id}
 
 
@@ -175,7 +218,8 @@ async def music_generate(req: MusicGenerateRequest):
 async def music_adapt(req: MusicAdaptRequest):
     """自适应配乐：语音（复用任务或现合成）+ 情绪/时长匹配音乐 + 混音。"""
     tr = tasks.create_task(req)
-    _run_bg(tasks.run_music_adapt(tr.task_id, req))
+    bg = _run_bg(tasks.run_music_adapt(tr.task_id, req))
+    tasks.register_running(tr.task_id, bg)
     return {"task_id": tr.task_id}
 
 
@@ -214,6 +258,17 @@ async def task_status(task_id: str):
         # FIX-007：不存在返回 404
         raise HTTPException(status_code=404, detail="task not found")
     return tr
+
+
+@app.delete("/api/tasks/{task_id}")
+async def cancel_task_api(task_id: str):
+    tr = tasks.get_task(task_id)
+    if not tr:
+        raise HTTPException(status_code=404, detail="task not found")
+    if tr.status in ("done", "failed"):
+        return {"cancelled": False, "reason": "task already finished"}
+    ok = tasks.cancel_task(task_id)
+    return {"cancelled": ok, "task_id": task_id}
 
 
 @app.get("/api/tasks/{task_id}/stream")

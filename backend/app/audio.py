@@ -1,6 +1,7 @@
 """灵声 VoiceForge - 音频后处理（ffmpeg：拼接 / 转格式 / 字幕）"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -154,3 +155,20 @@ def _write_srt(entries: list[tuple], out_path: str) -> None:
         lines.append("")
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))
+
+
+# ---------------------------------------------------------------- async 包装
+# ffmpeg/ffprobe 为阻塞子进程，直接在事件循环里调用会阻塞所有并发任务。
+# 用 asyncio.to_thread 丢到线程池执行，保持事件循环不被卡住。
+
+async def trim_leading_silence_mp3_async(src, dst, threshold_db=-48.0):
+    return await asyncio.to_thread(trim_leading_silence_mp3, src, dst, threshold_db)
+
+async def concat_mp3_async(seg_files, out_path, silence_ms=JOIN_SILENCE_MS):
+    return await asyncio.to_thread(concat_mp3, seg_files, out_path, silence_ms)
+
+async def duration_ms_async(path):
+    return await asyncio.to_thread(duration_ms, path)
+
+async def to_wav_async(src_mp3, out_wav):
+    return await asyncio.to_thread(to_wav, src_mp3, out_wav)
