@@ -1,0 +1,11 @@
+services:
+  voiceforge:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - VFORGE_OUTPUT_DIR=/app/voiceforge/outputs
+      - VFORGE_MAX_CHUNK=1000
+    volumes:
+      - ./outputs:/app/voiceforge/outputs
+    restart: unless-stopped
