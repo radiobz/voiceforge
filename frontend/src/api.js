@@ -51,6 +51,11 @@ export const api = {
       body: JSON.stringify(payload)
     })
   },
+  musicAnalyze(file) {
+    const fd = new FormData()
+    fd.append('file', file)
+    return j('/api/music/analyze', { method: 'POST', body: fd })
+  },
   uploadCustomVoice(file, name) {
     const fd = new FormData()
     fd.append('file', file)

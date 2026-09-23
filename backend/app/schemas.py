@@ -53,10 +53,11 @@ class SynthesizeRequest(BaseModel):
 
 
 class MusicGenerateRequest(BaseModel):
-    mode: str = "chill"                    # chill / meditation / ambient
+    mode: str = "chill"                    # chill / meditation / ambient / lofi
     duration: int = 120                    # 秒，10~2400（40 分钟）
     mood: Optional[str] = None             # joy/sad/calm/angry/fear/surprised；None=随机
     seed: Optional[int] = None             # None=随机种子
+    profile: Optional[dict] = None         # 风格分析覆盖（audio_profile.to_params 输出）
 
 
 class MusicAdaptRequest(BaseModel):

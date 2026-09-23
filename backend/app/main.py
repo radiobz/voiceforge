@@ -141,6 +141,29 @@ async def music_adapt(req: MusicAdaptRequest):
     return {"task_id": tr.task_id}
 
 
+@app.post("/api/music/analyze")
+async def music_analyze(file: UploadFile = File(...)):
+    """分析音频/视频的音乐风格特征（BPM/调式/亮度/节奏/黑胶感），
+    返回 profile + 可直接用于 /api/music/generate 的生成参数。"""
+    from . import audio_profile
+    import tempfile as _tmp
+    data = await file.read()
+    if len(data) > MAX_UPLOAD:
+        raise ValueError("文件超过 100MB 上限")
+    fd, tmp = _tmp.mkstemp(suffix=".media")
+    import os as _os
+    _os.close(fd)
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+    try:
+        prof = audio_profile.extract(tmp)
+    finally:
+        if _os.path.exists(tmp):
+            _os.remove(tmp)
+    params = audio_profile.to_params(prof)
+    return {"profile": prof, "params": params}
+
+
 @app.get("/api/tasks/{task_id}")
 async def task_status(task_id: str):
     tr = tasks.get_task(task_id)

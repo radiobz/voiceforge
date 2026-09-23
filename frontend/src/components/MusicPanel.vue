@@ -42,6 +42,18 @@
           <span class="tip">最长 40 分钟 · 生成通常需十几秒到一分钟</span>
         </div>
 
+        <!-- 参考风格分析：上传音频/视频 -> 分析 -> 按此风格生成 -->
+        <div class="ctl-row ana-row">
+          <label class="ana-label">参考风格</label>
+          <label class="file-btn btn">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M12 16V4m0 0 5 5m-5-5-5 5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            上传音/视频分析风格
+            <input type="file" accept="audio/*,video/*" hidden @change="analyzeRef" :disabled="anaBusy">
+          </label>
+          <span v-if="anaBusy" class="tip">分析中…</span>
+          <span v-else-if="anaInfo" class="tip mono">{{ anaInfo }}</span>
+        </div>
+
         <div v-if="genBusy" class="progress-bar"><i :style="{width: genTask ? genTask.progress + '%' : '8%'}"></i></div>
 
         <div v-if="genTask && genTask.status === 'failed'" class="err">{{ genTask.message }}</div>
@@ -49,6 +61,7 @@
         <div v-if="genTask && genTask.status === 'done'" class="result">
           <div class="meta">
             <span class="chip on">{{ genTask.music_meta.label }}</span>
+            <span v-if="genTask.music_meta.from_profile" class="chip accent">参考风格</span>
             <span class="chip">{{ genTask.music_meta.key }}调</span>
             <span class="chip">{{ genTask.music_meta.bpm }} BPM</span>
             <span class="chip">{{ genTask.music_meta.kind }}</span>
@@ -162,6 +175,7 @@ const emit = defineEmits(['toast'])
 
 const MODES = [
   { key: 'chill', label: 'Chill' },
+  { key: 'lofi', label: 'Lofi · 黑胶' },
   { key: 'meditation', label: '冥想静想' },
   { key: 'ambient', label: '轻氛围' }
 ]
@@ -179,6 +193,28 @@ const genMin = ref(3)
 const genMood = ref('')
 const genBusy = ref(false)
 const genTask = ref(null)
+const anaBusy = ref(false)
+const anaInfo = ref('')
+const anaProfile = ref(null)
+
+async function analyzeRef(ev) {
+  const file = ev.target.files && ev.target.files[0]
+  if (!file) return
+  anaBusy.value = true
+  anaInfo.value = ''
+  anaProfile.value = null
+  try {
+    const r = await api.musicAnalyze(file)
+    anaProfile.value = r.params
+    anaInfo.value = `BPM ${r.profile.bpm} · ${r.profile.key}${r.profile.mode === 'minor' ? 'm' : ''}调 · ${r.profile.beat ? '有律动' : '无节拍'} · 亮度 ${r.profile.brightness}k`
+    genMode.value = 'lofi'
+    emit('toast', '已按参考风格定向，可直接生成')
+  } catch (e) {
+    emit('toast', '分析失败：' + e.message)
+  } finally {
+    anaBusy.value = false
+  }
+}
 
 const adMode = ref('chill')
 const adMood = ref('')
@@ -205,7 +241,8 @@ async function generateMusic() {
     const { task_id } = await api.musicGenerate({
       mode: genMode.value,
       duration: genMin.value * 60,
-      mood: genMood.value || null
+      mood: genMood.value || null,
+      profile: anaProfile.value || null
     })
     poll(task_id, d => { genTask.value = d })
   } catch (e) {
@@ -280,6 +317,9 @@ function balanceLabel(b) {
 input[type="range"] { width: 100%; accent-color: var(--accent); }
 .rng-scale { display: flex; justify-content: space-between; font-size: 10px; color: var(--ink-faint); font-family: var(--mono); }
 .btn-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ana-row { align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.ana-label { font-size: 12px; color: var(--ink-faint); }
+.file-btn { cursor: pointer; margin: 0; }
 .tip { font-size: 11.5px; color: var(--ink-faint); }
 .progress-bar { height: 7px; border-radius: 999px; background: var(--line); overflow: hidden; }
 .progress-bar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--teal), #4FB6B4); transition: width .4s; }

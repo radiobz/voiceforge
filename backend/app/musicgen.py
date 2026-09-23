@@ -59,13 +59,27 @@ MOODS = {
 MODES = {
     "chill":      dict(chord_len=(7, 9), arp_step=(0.28, 0.4), arp_prob=0.55,
                        pluck=True, pad_gain=0.16, bass_gain=0.13, arp_gain=0.10,
-                       pluck_gain=0.09, noise_gain=0.030, noise_cut=420, lfo=(0.06, 0.1)),
+                       pluck_gain=0.09, noise_gain=0.030, noise_cut=420, lfo=(0.06, 0.1),
+                       beat=False, vinyl=False, wobble=False),
     "meditation": dict(chord_len=(12, 18), arp_step=(1.2, 2.0), arp_prob=0.35,
                        pluck=False, pad_gain=0.20, bass_gain=0.17, arp_gain=0.07,
-                       pluck_gain=0.0, noise_gain=0.045, noise_cut=300, lfo=(0.03, 0.06)),
+                       pluck_gain=0.0, noise_gain=0.045, noise_cut=300, lfo=(0.03, 0.06),
+                       beat=False, vinyl=False, wobble=False),
     "ambient":    dict(chord_len=(9, 12), arp_step=(0.7, 1.1), arp_prob=0.45,
                        pluck=True, pad_gain=0.18, bass_gain=0.14, arp_gain=0.08,
-                       pluck_gain=0.06, noise_gain=0.035, noise_cut=360, lfo=(0.05, 0.08)),
+                       pluck_gain=0.06, noise_gain=0.035, noise_cut=360, lfo=(0.05, 0.08),
+                       beat=False, vinyl=False, wobble=False),
+    "lofi":       dict(chord_len=(9, 13), arp_step=(0.42, 0.6), arp_prob=0.5,
+                       pluck=True, pad_gain=0.17, bass_gain=0.15, arp_gain=0.09,
+                       pluck_gain=0.07, noise_gain=0.030, noise_cut=300, lfo=(0.05, 0.08),
+                       beat=True, vinyl=True, wobble=True),
+}
+
+# lofi 的柔和进行（7/9 和弦为主，chill-hop 风格）
+LOFI_PROGS = {
+    "major": [("maj7", 0), ("min7", -3), ("maj7", -4), ("add9", -2)],
+    "minor": [("min7", 0), ("maj7", -4), ("min7", 5), ("maj7", 7)],
+    "pentatonic": [("sus2", 0), ("add9", -4), ("sus2", 2), ("add9", -2)],
 }
 
 GAIN_SAFE = 0.90           # 输出峰值安全系数
@@ -89,8 +103,12 @@ def _lowpass_fft(x: np.ndarray, cutoff: float) -> np.ndarray:
 
 # ---------------------------------------------------------------- 事件生成
 
-def _plan(seed: int, mode: str, mood: str, seconds: float) -> dict:
-    """由种子生成整首音乐的结构计划（和声/琶音/弹拨事件）。"""
+def _plan(seed: int, mode: str, mood: str, seconds: float,
+          profile: dict | None = None) -> dict:
+    """由种子生成整首音乐的结构计划（和声/琶音/弹拨/鼓组/黑胶）。
+
+    profile: audio_profile.to_params() 的风格覆盖（tonic/scale/bpm/beat/vinyl/...）。
+    """
     rng = random.Random(seed)
     mconf = MOODS[mood]
     st = MODES[mode]
@@ -99,10 +117,27 @@ def _plan(seed: int, mode: str, mood: str, seconds: float) -> dict:
     chord_len = rng.uniform(*st["chord_len"])
     n_chords = max(1, int(seconds / chord_len) + 1)
     bright = mconf["bright"]
+
+    # 风格覆盖（分析驱动）
+    scale = mconf["kind"]
+    if profile:
+        if profile.get("tonic"):
+            tonic = int(profile["tonic"])
+        if profile.get("bpm", 0) > 0:
+            bpm = float(profile["bpm"])
+        if profile.get("scale"):
+            scale = profile["scale"]
+        if profile.get("brightness"):
+            bright = float(np.clip(profile["brightness"], 0.3, 1.2))
+    if mode == "lofi":
+        prog = LOFI_PROGS.get(scale, LOFI_PROGS["major"])
+    else:
+        prog = mconf["prog"]
+
     # 和声段
     chords = []
     for i in range(n_chords):
-        pat, root_off = mconf["prog"][i % len(mconf["prog"])]
+        pat, root_off = prog[i % len(prog)]
         start = i * chord_len
         end = min(start + chord_len, seconds)
         if end - start < 1.0:
@@ -133,8 +168,49 @@ def _plan(seed: int, mode: str, mood: str, seconds: float) -> dict:
                 plucks.append((t, rng.uniform(1.0, 1.6), _midi_to_freq(nn),
                                rng.uniform(0.7, 1.0)))
             t += pstep
+
+    # ---- 鼓组（lofi：软 kick / 轻 snare / 摆动 hi-hat，4/4 + swing）
+    drums: list[tuple] = []
+    beat = bool(profile.get("beat")) if profile else st["beat"]
+    density = float(profile.get("beat_density", 0.5)) if profile else 0.5
+    if beat and bpm > 0:
+        step_b = 60.0 / bpm
+        swing = 0.12 * step_b
+        eighth = step_b / 2
+        density = 0.35 + 0.65 * min(1.0, max(0.1, density))
+        t = 0.0
+        beat_i = 0
+        while t < seconds:
+            bar_pos = beat_i % 4
+            # kick：1、3 拍（随密度偶尔加 3.5）
+            if bar_pos in (0, 2) and rng.random() < density:
+                drums.append(("kick", t, rng.uniform(0.85, 1.0)))
+            elif bar_pos == 3 and rng.random() < density * 0.35:
+                drums.append(("kick", t + swing, rng.uniform(0.5, 0.7)))
+            # snare：2、4 拍（轻）
+            if bar_pos in (1, 3):
+                drums.append(("snare", t, rng.uniform(0.4, 0.55)))
+            # hi-hat：八分音符，弱拍加 swing
+            for off, swing_on in ((0.0, False), (eighth, True)):
+                ht = t + off + (swing if swing_on else 0.0)
+                if ht < seconds and rng.random() < 0.75:
+                    drums.append(("hat", ht, rng.uniform(0.35, 0.6)))
+            t += step_b
+            beat_i += 1
+
+    # ---- 黑胶噪点（lofi：稀疏高频爆点）
+    vinyl = float(profile.get("vinyl", 0.0)) if profile else (0.15 if st["vinyl"] else 0.0)
+    bursts: list[tuple] = []
+    if st["vinyl"] or (profile and vinyl > 0.02):
+        rate = 1.5 + 6.0 * min(1.0, vinyl)
+        t = 0.0
+        while t < seconds:
+            if rng.random() < rate / 4.0:
+                bursts.append((t, rng.uniform(0.012, 0.03) * (0.4 + vinyl)))
+            t += 0.25
     return dict(rng=rng, tonic=tonic, bpm=bpm, mode=mode, mood=mood,
-                chords=chords, arps=arps, plucks=plucks, seconds=seconds,
+                chords=chords, arps=arps, plucks=plucks, drums=drums,
+                bursts=bursts, vinyl=vinyl, beat=beat, seconds=seconds,
                 bright=bright, st=st, np_seed=rng.randrange(0, 2 ** 31))
 
 
@@ -213,6 +289,53 @@ def _render_block(plan: dict, b0: float, b1: float) -> np.ndarray:
     spark[-edge:] *= np.linspace(1.0, 0.0, edge)
     bus[:n] += spark[:n]
 
+    # ---- 鼓组（kick 正弦音高下滑 / snare 噪声+中频 / hat 短噪声）
+    drum_bus = np.zeros(n2, dtype=np.float32)
+    for ev in plan["drums"]:
+        kind, onset, amp = ev
+        if onset < b0 or onset > b1 + 0.5:
+            continue
+        i0 = int((onset - b0) * SR)
+        if kind == "kick":
+            ln = int(0.28 * SR)
+            seg = np.arange(ln, dtype=np.float32) / SR
+            ph = 2 * np.pi * (55.0 * seg + 2.0 * (1.0 - np.exp(-20.0 * seg)))
+            tone = np.sin(ph) * np.exp(-6.0 * seg)
+            drum_bus[i0:i0 + ln] += 0.22 * amp * tone
+        elif kind == "snare":
+            ln = int(0.20 * SR)
+            rng_np = np.random.default_rng(plan["np_seed"] ^ int(onset * 104729))
+            seg = np.arange(ln, dtype=np.float32) / SR
+            nse = rng_np.normal(0, 1, ln).astype(np.float32) * np.exp(-seg / 0.05)
+            tne = np.sin(2 * np.pi * 185 * seg) * np.exp(-seg / 0.07)
+            drum_bus[i0:i0 + ln] += 0.06 * amp * (nse * 0.6 + tne)
+        elif kind == "hat":
+            ln = int(0.07 * SR)
+            rng_np = np.random.default_rng(plan["np_seed"] ^ int(onset * 100003))
+            seg = np.arange(ln, dtype=np.float32) / SR
+            nse = rng_np.normal(0, 1, ln).astype(np.float32) * np.exp(-seg / 0.02)
+            drum_bus[i0:i0 + ln] += 0.03 * amp * nse
+    # ---- 黑胶噪点（稀疏短促高频爆点）
+    for (t0, amp) in plan["bursts"]:
+        if t0 < b0 or t0 > b1:
+            continue
+        ln = int(0.004 * SR)
+        i0 = int((t0 - b0) * SR)
+        if i0 + ln <= n2:
+            rng_np = np.random.default_rng(plan["np_seed"] ^ int(t0 * 1299709))
+            burst = rng_np.normal(0, 1, ln).astype(np.float32) * amp
+            drum_bus[i0:i0 + ln] += burst
+    edge2 = int(0.004 * SR)
+    drum_bus[:edge2] *= np.linspace(0.0, 1.0, edge2)
+    drum_bus[-edge2:] *= np.linspace(1.0, 0.0, edge2)
+    bus[:n] += drum_bus[:n]
+
+    # ---- 磁带颤音（慢速幅度呼吸，叠加在垫音/低音层上）
+    if plan["st"].get("wobble"):
+        wob = 1.0 + 0.004 * np.sin(
+            2 * np.pi * 0.32 * (np.arange(n, dtype=np.float32) / SR + b0))
+        bus[:n] *= wob
+
     # ---- 噪声氛围（FFT 低通 + 慢速 LFO 呼吸）
     f_lfo = rng.uniform(*st["lfo"])
     rng_np = np.random.default_rng(plan["np_seed"] ^ int(b0 * 7919))
@@ -239,13 +362,14 @@ def _render_block(plan: dict, b0: float, b1: float) -> np.ndarray:
     return np.stack([L, R], axis=1)
 
 
-def generate_plan(mode: str, mood: str, seconds: float, seed: int) -> dict:
+def generate_plan(mode: str, mood: str, seconds: float, seed: int,
+                  profile: dict | None = None) -> dict:
     if mode not in MODES:
         raise ValueError(f"未知风格：{mode}（可选 {list(MODES)}）")
     if mood not in MOODS:
         raise ValueError(f"未知情绪：{mood}（可选 {list(MOODS)}）")
     seconds = max(10.0, min(MAX_SECONDS, float(seconds)))
-    return _plan(seed, mode, mood, seconds)
+    return _plan(seed, mode, mood, seconds, profile=profile)
 
 
 def render_wav(plan: dict, out_wav: str) -> None:
@@ -288,15 +412,18 @@ def to_mp3(wav_path: str, mp3_path: str, bitrate: str = "192k") -> None:
 
 
 def generate(mode: str, mood: str, seconds: float, seed: int,
-             out_mp3: str) -> dict:
-    """一键生成：plan -> WAV -> MP3，返回元信息。"""
-    plan = generate_plan(mode, mood, seconds, seed)
+             out_mp3: str, profile: dict | None = None) -> dict:
+    """一键生成：plan -> WAV -> MP3，返回元信息（支持风格 profile 覆盖）。"""
+    plan = generate_plan(mode, mood, seconds, seed, profile=profile)
     wav = out_mp3.rsplit(".", 1)[0] + ".wav"
     render_wav(plan, wav)
     to_mp3(wav, out_mp3)
     meta = dict(mode=mode, mood=mood, seed=seed, seconds=seconds,
                 key=_note_name(plan["tonic"]), bpm=plan["bpm"],
-                kind=MOODS[mood]["kind"])
+                kind=MOODS[mood]["kind"], beat=plan["beat"])
+    if profile:
+        meta["from_profile"] = True
+        meta["vinyl"] = round(plan["vinyl"], 3)
     return meta
 
 
