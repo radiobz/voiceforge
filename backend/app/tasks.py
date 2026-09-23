@@ -55,14 +55,18 @@ def _prosody(req, emotion_key: str, strength: float) -> tuple[float, float, floa
 
 async def _synth_piece(tr: TaskResult, text: str, voice: str,
                        rate: float, pitch: float, volume: float,
+                       emotion: str | None, strength: float,
                        task_dir: str, tag: str) -> str:
     """合成单个文本片 -> 修剪前导静音 -> 返回修剪后的 mp3 路径。
 
-    voice 可能是自定义音色 id（custom_xxx），此处解析为最接近的内置音色。
+    voice 可能是自定义音色 id（custom_xxx），此处解析为最接近的内置音色；
+    emotion/strength 供指令式引擎（CosyVoice2/GLM-TTS/豆包）使用，
+    韵律型引擎（Edge）忽略它们、直接用 rate/pitch/volume。
     """
     eff_voice = voice_lab.resolve_voice(voice)
     raw = os.path.join(task_dir, f"{tag}_raw.mp3")
-    await engines.synthesize(text, raw, eff_voice, rate=rate, pitch=pitch, volume=volume)
+    await engines.synthesize(text, raw, eff_voice, rate=rate, pitch=pitch,
+                             volume=volume, emotion=emotion, strength=strength)
     trimmed = os.path.join(task_dir, f"{tag}.mp3")
     audio.trim_leading_silence_mp3(raw, trimmed)
     return trimmed
@@ -95,6 +99,7 @@ async def _run_plain(tr: TaskResult, req, text: str) -> None:
         piece_paths = []
         for j, piece in enumerate(pieces):
             p = await _synth_piece(tr, piece, req.voice, rate, pitch, volume,
+                                   meta["emotion"], meta["strength"],
                                    task_dir, f"seg_{i:03d}_p{j:02d}")
             piece_paths.append(p)
         seg_path = os.path.join(task_dir, f"seg_{i:03d}.mp3")
@@ -151,7 +156,7 @@ async def _run_script(tr: TaskResult, req, text: str) -> None:
         rate, pitch, volume = _prosody(req, emo, st)
         voice = role_voices.get(ln["role"], req.voice)
         p = await _synth_piece(tr, ln["text"], voice, rate, pitch, volume,
-                               task_dir, f"line_{i:04d}")
+                               emo, st, task_dir, f"line_{i:04d}")
         piece_paths.append(p)
         dur = audio.duration_ms(p)
         units.append({"role": ln["role"], "text": ln["text"], "emotion": emo,

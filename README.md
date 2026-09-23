@@ -115,7 +115,7 @@ voiceforge/
 剧本模式提供"多音色 + 逐句情绪 + 旁白/对白结构"的有声剧听感，但在 Edge-TTS 引擎下：
 - 支持：多角色音色分离、情绪随台词逐句变化、自然句读停顿
 - 不支持：模型级"吞字/气声/哭腔"等端到端演绎效果（需要语音大模型）
-若需达到完整有声剧拟真度，请按 [docs/UPGRADE-COSYVOICE.md](docs/UPGRADE-COSYVOICE.md) 接入 CosyVoice 2（GPU 机器，零样本音色克隆 + 指令式情绪）。
+若需达到完整有声剧拟真度，请按 [docs/ENGINE_EXTENSION.md](docs/ENGINE_EXTENSION.md) 接入克隆类引擎（CosyVoice 2 / GLM-TTS / 豆包声音复刻，GPU 机器或 API，零样本音色克隆 + 指令式情绪）——接口已预留，改环境变量即可启用。
 
 ## 许可证 / License
 
